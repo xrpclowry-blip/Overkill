@@ -29,6 +29,8 @@
   --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Helvetica,Arial,sans-serif;
 }
 *{box-sizing:border-box}
+/* .banner and .tiles set display, which would otherwise beat the [hidden] attribute */
+[hidden]{display:none!important}
 html,body{margin:0;padding:0}
 body{
   background:var(--surface-0);
@@ -127,6 +129,7 @@ tbody td:first-child{color:var(--text-primary);font-weight:500}
 .pill.leader{background:#c9850022;color:#e0a52e;border-color:#c9850055}
 .pill.deputy{background:#3987e522;color:#79b3f2;border-color:#3987e555}
 .pill.on{background:#199e7022;color:#3fc294;border-color:#199e7055}
+.pill.mid{background:#c9850022;color:#e0a52e;border-color:#c9850055}
 .pill.off{background:#ffffff0d;color:var(--text-muted);border-color:var(--border)}
 .pos{color:#3fc294}
 .neg{color:#f08a8a}
@@ -251,6 +254,7 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
       <button role="tab" data-view="race" aria-selected="false">XP race</button>
       <button role="tab" data-view="cup" aria-selected="false">Clan Cup</button>
       <button role="tab" data-view="ranks" aria-selected="false">Rankings</button>
+      <button role="tab" data-view="market" aria-selected="false">Market</button>
       <button role="tab" data-view="vault" aria-selected="false">Vault</button>
       <button role="tab" data-view="trends" aria-selected="false" id="tabTrends" hidden>Trends</button>
       <button role="tab" data-view="activity" aria-selected="false">Activity log</button>
@@ -393,6 +397,89 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
       <div class="tbl-scroll"><table id="rivalTable"></table></div>
       <div id="rivalBars" style="margin-top:14px"></div>
     </div>
+  </section>
+
+  <!-- MARKET -->
+  <section class="view" id="view-market" hidden>
+    <div id="mktLoading" class="panel" hidden>
+      <h2>Reading the market</h2>
+      <p class="hint" id="mktLoadingText">Fetching current prices and 30 days of trade history…</p>
+      <div class="skel" style="height:14px;margin:6px 0"></div>
+      <div class="skel" style="height:14px;margin:6px 0;width:80%"></div>
+      <div class="skel" style="height:14px;margin:6px 0;width:60%"></div>
+    </div>
+
+    <div id="mktBody" hidden>
+      <div class="tiles" id="mktTiles"></div>
+
+      <div class="panel">
+        <div class="controls">
+          <input type="search" id="mktSearch" placeholder="Find an item…">
+          <label class="dim" style="font-size:12.5px">Gold to deploy
+            <input type="text" id="mktCapital" inputmode="numeric" placeholder="optional"
+                   style="width:110px;margin-left:6px"></label>
+          <select id="mktMaxPrice">
+            <option value="">Any unit price</option>
+            <option value="100">Under 100 gp</option>
+            <option value="1000">Under 1K</option>
+            <option value="10000">Under 10K</option>
+            <option value="100000">Under 100K</option>
+            <option value="1000000">Under 1M</option>
+          </select>
+          <select id="mktMinMargin">
+            <option value="0">Any margin</option>
+            <option value="2">2%+</option>
+            <option value="5">5%+</option>
+            <option value="10">10%+</option>
+            <option value="20">20%+</option>
+          </select>
+          <select id="mktMinVol">
+            <option value="0">Any volume</option>
+            <option value="100">100+ a day</option>
+            <option value="1000">1K+ a day</option>
+            <option value="10000">10K+ a day</option>
+            <option value="100000">100K+ a day</option>
+          </select>
+          <select id="mktReliability">
+            <option value="0">Any reliability</option>
+            <option value="50">Trades most days</option>
+            <option value="90">Trades every day</option>
+          </select>
+          <button class="ghost" id="mktReset">Reset</button>
+        </div>
+        <p class="hint" id="mktCount"></p>
+        <div class="tbl-scroll"><table id="mktTable"></table></div>
+      </div>
+
+      <div class="panel" id="mktDetail" style="margin-top:14px" hidden></div>
+
+      <div class="panel" style="margin-top:14px" id="craftPanel" hidden>
+        <h2>Item creation — instant combinations</h2>
+        <p class="hint" id="craftHint"></p>
+        <div class="controls">
+          <select id="craftWho"><option value="">Anyone's levels</option></select>
+          <select id="craftExit">
+            <option value="instant">Sell instantly into the bid</option>
+            <option value="patient">List it and wait</option>
+          </select>
+          <label class="dim" style="font-size:12.5px">
+            <input type="checkbox" id="craftAffordable"> Only what I can afford</label>
+          <span class="dim" id="craftCount" style="font-size:12.5px"></span>
+        </div>
+        <div class="tbl-scroll"><table id="craftTable"></table></div>
+      </div>
+
+      <div class="panel" style="margin-top:14px" id="craftDetail" hidden></div>
+
+      <div class="panel" style="margin-top:14px">
+        <h2>Why these are excluded</h2>
+        <p class="hint">The tempting-looking ones that would cost you money, and the reason.
+          Worth a read — it's how the market traps people.</p>
+        <div class="tbl-scroll"><table id="mktRejects"></table></div>
+      </div>
+    </div>
+
+    <div id="mktError" class="banner err" hidden></div>
   </section>
 
   <!-- TRENDS -->
@@ -1789,8 +1876,638 @@ function initExtras(){
 </script>
 <script>
 "use strict";
+
+/* =====================================================================
+   Market — what to buy now and list later, ranked and filterable.
+
+   Two API calls do all the work:
+     prices/latest      current best bid / best ask / queue depth
+     prices/history 30d daily average price AND daily trade volume
+
+   The second one is why this is sharp on day one: trade volume per day
+   over 30 days answers "does this actually move, or did it move once".
+   ===================================================================== */
+
+const MKT = {
+  TAX: 0.01,            // sell tax, confirmed from market-settings
+  SHARE: 0.10,          // never take more than this slice of a day's volume
+  FAIR_HEADROOM: 1.05,  // don't plan to sell more than 5% above fair value
+  FANTASY: 1.25,        // an ask this far above fair value isn't a real price
+  THIN: 0.34            // trades on fewer than a third of days = unreliable
+};
+
+Object.assign(state, {
+  market:null, marketLoading:false, marketError:null,
+  mktSort:{ key:"potential", dir:-1 },
+  mktCapital:0, mktPick:null
+});
+
+/* --------------------------------------------------------------------- */
+function median(nums){
+  const v = nums.filter(x => Number.isFinite(x) && x > 0).sort((a,b) => a-b);
+  if (!v.length) return 0;
+  const m = v.length >> 1;
+  return v.length % 2 ? v[m] : Math.round((v[m-1] + v[m]) / 2);
+}
+function reliabilityWords(pct){
+  if (pct >= 90) return "Trades every day";
+  if (pct >= 50) return "Trades most days";
+  if (pct >= 25) return "A few days a week";
+  if (pct > 0)   return "Barely trades";
+  return "Never trades";
+}
+function reliabilityClass(pct){
+  return pct >= 90 ? "on" : pct >= 50 ? "mid" : "off";
+}
+
+/* --------------------------------------------------------------------- */
+async function loadMarket(){
+  if (state.market || state.marketLoading) return;
+  state.marketLoading = true;
+  $("#mktLoading").hidden = false;
+  $("#mktBody").hidden = true;
+  $("#mktError").hidden = true;
+
+  let live, hist;
+  try {
+    [live, hist] = await Promise.all([
+      api("/api/PlayerMarket/items/prices/latest?includeAveragePrice=true"),
+      api("/api/PlayerMarket/items/prices/history?period=30d")
+    ]);
+  } catch (e){
+    state.marketLoading = false;
+    $("#mktLoading").hidden = true;
+    $("#mktError").hidden = false;
+    $("#mktError").innerHTML = `<div><strong>Couldn't read the market.</strong><br>${esc(e.message)}</div>`;
+    return;
+  }
+
+  const byId = new Map();
+  (state.items ? [...state.items.values()] : []).forEach(i => byId.set(i.id, i));
+
+  // Group history rows per item.
+  const days = new Map();
+  for (const r of (Array.isArray(hist) ? hist : [])){
+    if (!days.has(r.itemId)) days.set(r.itemId, []);
+    days.get(r.itemId).push(r);
+  }
+  for (const rows of days.values()) rows.sort((a,b) => a.timestamp < b.timestamp ? -1 : 1);
+
+  const rows = [], rejects = [];
+
+  for (const p of (Array.isArray(live) ? live : [])){
+    const meta = byId.get(p.itemId);
+    const name = meta ? meta.name : "item #" + p.itemId;
+    const hist = days.get(p.itemId) || [];
+
+    const tracked   = hist.length;
+    const traded    = hist.filter(h => (h.tradeVolume||0) > 0).length;
+    const relPct    = tracked ? Math.round(traded / tracked * 100) : 0;
+    const totalVol  = hist.reduce((s,h) => s + (h.tradeVolume||0), 0);
+    const volPerDay = tracked ? totalVol / tracked : 0;
+    const fair      = median(hist.map(h => h.averagePrice)) || p.dailyAveragePrice || 0;
+
+    const bid = p.highestBuyPrice || 0;
+    const ask = p.lowestSellPrice || 0;
+    const spark = hist.map(h => h.averagePrice || 0);
+
+    const base = {
+      id:p.itemId, name, bid, ask, fair, relPct, tracked, traded,
+      volPerDay, turnover: volPerDay * (fair || p.dailyAveragePrice || 0),
+      bidDepth: p.highestPriceVolume || 0, askDepth: p.lowestPriceVolume || 0,
+      spark, dailyAvg: p.dailyAveragePrice || 0
+    };
+
+    const reject = r => { rejects.push({ ...base, reason:r, apparent: bid > 0 ? (ask-bid)/bid*100 : 0 }); };
+
+    if (!bid)                       { reject("Nobody is buying — no bid to sell into"); continue; }
+    if (!ask)                       { reject("Nothing listed — no price to undercut");  continue; }
+    if (!tracked)                   { reject("No trade history available");             continue; }
+    if (relPct < MKT.THIN * 100)    { reject(`Only trades ${traded} of the last ${tracked} days`); continue; }
+    if (volPerDay < 1)              { reject("Almost no volume — you'd be the market");  continue; }
+
+    // The realistic exit: never plan to sell above where it actually trades.
+    const capped = fair ? Math.round(fair * MKT.FAIR_HEADROOM) : ask - 1;
+    const buyAt  = bid + 1;
+    const listAt = Math.min(ask - 1, capped);
+
+    if (fair && ask > fair * MKT.FANTASY && listAt <= buyAt){
+      reject(`Listed at ${abbr(ask)} but only worth about ${abbr(fair)}`); continue;
+    }
+    if (listAt <= buyAt)            { reject("Buy and sell prices have converged"); continue; }
+
+    const profitPerUnit = listAt * (1 - MKT.TAX) - buyAt;
+    if (profitPerUnit <= 0)         { reject("Spread doesn't cover the 1% sell tax"); continue; }
+
+    const safeQty = Math.floor(volPerDay * MKT.SHARE);
+    if (safeQty < 1)                { reject("Too thin to take a position inside a day"); continue; }
+
+    rows.push({
+      ...base, buyAt, listAt, profitPerUnit,
+      marginPct: profitPerUnit / buyAt * 100,
+      safeQty,
+      flagged: fair ? ask > fair * MKT.FANTASY : false
+    });
+  }
+
+  rejects.sort((a,b) => b.apparent - a.apparent);
+  // Keep the raw feeds around — item creation needs prices and depth per item.
+  state.market = {
+    rows, rejects, scanned: (live||[]).length, at:new Date(),
+    priceById: new Map((live||[]).map(p => [p.itemId, p])),
+    statsById: new Map(rows.concat(rejects).map(r => [r.id, r]))
+  };
+  state.marketLoading = false;
+  $("#mktLoading").hidden = true;
+  $("#mktBody").hidden = false;
+  renderMarket();
+  if (typeof buildCreation === "function") buildCreation();
+}
+
+/* --------------------------------------------------------------------- */
+/* Position sizing depends on capital, so it's computed at render time.   */
+function sized(r){
+  const byCapital = state.mktCapital ? Math.floor(state.mktCapital / r.buyAt) : Infinity;
+  const qty = Math.max(0, Math.min(r.safeQty, byCapital));
+  return { qty, potential: qty * r.profitPerUnit, outlay: qty * r.buyAt };
+}
+
+const MKT_COLS = [
+  { key:"name",      label:"Item",        num:false, get:r => r.name,
+    cell:r => `${esc(r.name)}${r.flagged ? ' <span class="pill off" title="listed well above fair value">check</span>' : ""}` },
+  { key:"buyAt",     label:"Buy at",      get:r => r.buyAt,        cell:r => num(r.buyAt) },
+  { key:"listAt",    label:"List at",     get:r => r.listAt,       cell:r => num(r.listAt) },
+  { key:"unit",      label:"Profit each", get:r => r.profitPerUnit,cell:r => `<span class="pos">${num(r.profitPerUnit)}</span>` },
+  { key:"margin",    label:"Margin",      get:r => r.marginPct,    cell:r => r.marginPct.toFixed(1) + "%" },
+  { key:"qty",       label:"Buy how many",get:r => sized(r).qty,   cell:r => { const s = sized(r);
+      return s.qty ? num(s.qty) : '<span class="dim">—</span>'; } },
+  { key:"potential", label:"Profit",      get:r => sized(r).potential,
+    cell:r => { const s = sized(r); return s.potential ? `<strong class="pos">${abbr(s.potential)}</strong>` : '<span class="dim">—</span>'; } },
+  { key:"outlay",    label:"Gold needed", get:r => sized(r).outlay, cell:r => abbr(sized(r).outlay) },
+  { key:"volume",    label:"Traded / day",get:r => r.volPerDay,    cell:r => abbr(r.volPerDay) },
+  { key:"turnover",  label:"Gold / day",  get:r => r.turnover,     cell:r => abbr(r.turnover) },
+  { key:"rel",       label:"Reliability", get:r => r.relPct,
+    cell:r => `<span class="pill ${reliabilityClass(r.relPct)}">${reliabilityWords(r.relPct)}</span>` },
+  { key:"under",     label:"vs fair",     get:r => r.fair ? (r.fair - r.buyAt) / r.fair * 100 : 0,
+    cell:r => { if (!r.fair) return '<span class="dim">—</span>';
+      const d = (r.fair - r.buyAt) / r.fair * 100;
+      return `<span class="${d>0?'pos':'dim'}">${d > 0 ? "−" : "+"}${Math.abs(d).toFixed(0)}%</span>`; } }
+];
+
+function marketFiltered(){
+  const m = state.market;
+  if (!m) return [];
+  const q      = $("#mktSearch").value.trim().toLowerCase();
+  const maxP   = Number($("#mktMaxPrice").value) || Infinity;
+  const minM   = Number($("#mktMinMargin").value) || 0;
+  const minV   = Number($("#mktMinVol").value) || 0;
+  const minRel = Number($("#mktReliability").value) || 0;
+
+  return m.rows.filter(r =>
+    (!q || r.name.toLowerCase().includes(q)) &&
+    r.buyAt <= maxP && r.marginPct >= minM &&
+    r.volPerDay >= minV && r.relPct >= minRel);
+}
+
+function renderMarket(){
+  const m = state.market;
+  if (!m) return;
+
+  const rows = marketFiltered();
+  const col = MKT_COLS.find(c => c.key === state.mktSort.key) || MKT_COLS[6];
+  rows.sort((a,b) => {
+    const av = col.get(a), bv = col.get(b);
+    if (typeof av === "string" || typeof bv === "string")
+      return state.mktSort.dir * String(av).localeCompare(String(bv));
+    return state.mktSort.dir * ((av||0) - (bv||0));
+  });
+
+  const best = rows.reduce((s,r) => Math.max(s, r.marginPct), 0);
+  const pot  = rows.reduce((s,r) => s + sized(r).potential, 0);
+  $("#mktTiles").innerHTML = [
+    tile("Worth trading", num(rows.length), `${num(m.scanned)} items scanned`),
+    tile("Best margin", best ? best.toFixed(1) + "%" : "—", "after the 1% sell tax"),
+    tile("Combined profit", pot ? abbr(pot) : "—",
+         state.mktCapital ? `if you had ${abbr(state.mktCapital)} per item` : "at safe position sizes"),
+    tile("Skipped", num(m.rejects.length), "shown below with reasons")
+  ].join("");
+
+  $("#mktCount").textContent =
+    `${rows.length} of ${m.rows.length} opportunities shown · positions capped at ${MKT.SHARE*100}% of a day's volume so both sides fill · prices read ${m.at.toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"})}`;
+
+  if (!rows.length){
+    $("#mktTable").innerHTML = "";
+    $("#mktCount").textContent = m.rows.length
+      ? "Nothing matches those filters. Loosen them, or check the skipped list below."
+      : "Nothing is worth trading right now — the spreads are too thin today. Worth checking again later.";
+    return;
+  }
+
+  $("#mktTable").innerHTML =
+    `<thead><tr>${MKT_COLS.map(c => `<th data-k="${c.key}">${c.label}${
+      state.mktSort.key === c.key ? `<span class="ar">${state.mktSort.dir === -1 ? "▼" : "▲"}</span>` : ""}</th>`).join("")}</tr></thead>
+     <tbody>${rows.slice(0,150).map(r => `<tr data-id="${r.id}">${
+       MKT_COLS.map(c => `<td>${c.cell(r)}</td>`).join("")}</tr>`).join("")}</tbody>`;
+
+  $$("#mktTable thead th").forEach(th => th.onclick = () => {
+    const k = th.dataset.k;
+    if (state.mktSort.key === k) state.mktSort.dir *= -1;
+    else state.mktSort = { key:k, dir: k === "name" ? 1 : -1 };
+    renderMarket();
+  });
+  $$("#mktTable tbody tr").forEach(tr => tr.onclick = () => showMarketItem(+tr.dataset.id));
+
+  $("#mktRejects").innerHTML =
+    `<thead><tr><th>Item</th><th>Bid</th><th>Listed at</th><th>Actually worth</th><th>Why it's skipped</th></tr></thead>
+     <tbody>${m.rejects.slice(0,25).map(r => `<tr>
+       <td>${esc(r.name)}</td>
+       <td>${r.bid ? num(r.bid) : '<span class="dim">none</span>'}</td>
+       <td>${r.ask ? num(r.ask) : '<span class="dim">none</span>'}</td>
+       <td>${r.fair ? num(r.fair) : '<span class="dim">unknown</span>'}</td>
+       <td class="dim" style="text-align:left">${esc(r.reason)}</td>
+     </tr>`).join("")}</tbody>`;
+
+  if (state.mktPick != null) showMarketItem(state.mktPick, true);
+}
+
+/* --------------------------------------------------------------------- */
+function sparkline(values){
+  const v = values.filter(x => Number.isFinite(x));
+  if (v.length < 2) return "";
+  const W = 260, H = 46, lo = Math.min(...v.filter(x=>x>0)), hi = Math.max(...v);
+  const span = Math.max(1, hi - lo);
+  const pts = v.map((y,i) => {
+    const x = (i / (v.length-1)) * W;
+    const yy = y > 0 ? H - ((y - lo) / span) * (H - 6) - 3 : H - 3;
+    return `${x.toFixed(1)},${yy.toFixed(1)}`;
+  }).join(" ");
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:320px;height:46px" role="img"
+     aria-label="Average price over the last 30 days">
+    <polyline points="${pts}" fill="none" stroke="${C1}" stroke-width="2"
+      stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+}
+
+function showMarketItem(id, quiet){
+  const r = (state.market.rows || []).find(x => x.id === id);
+  const host = $("#mktDetail");
+  if (!r){ host.hidden = true; return; }
+  state.mktPick = id;
+  const s = sized(r);
+  host.hidden = false;
+  host.innerHTML = `
+    <h2>${esc(r.name)}</h2>
+    <p class="hint">${reliabilityWords(r.relPct)} · ${abbr(r.volPerDay)} traded a day ·
+      about ${abbr(r.turnover)} of gold moves through it daily</p>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(230px,1fr))">
+      <div>
+        <div class="tile" style="background:var(--surface-2)">
+          <div class="k">Step 1 — place a buy offer</div>
+          <div class="v">${num(r.buyAt)} <span class="dim" style="font-size:14px">each</span></div>
+          <div class="m">${s.qty ? `for ${num(s.qty)}, costing ${abbr(s.outlay)}` : "no safe size at your capital"}</div>
+        </div>
+        <div class="tile" style="background:var(--surface-2);margin-top:10px">
+          <div class="k">Step 2 — when it fills, list at</div>
+          <div class="v">${num(r.listAt)} <span class="dim" style="font-size:14px">each</span></div>
+          <div class="m">${num(r.profitPerUnit)} profit each after tax · ${r.marginPct.toFixed(1)}%</div>
+        </div>
+        <div class="tile" style="background:#199e7014;border-color:#199e7044;margin-top:10px">
+          <div class="k">Expected profit</div>
+          <div class="v pos">${s.potential ? abbr(s.potential) : "—"}</div>
+          <div class="m">once both sides fill</div>
+        </div>
+      </div>
+      <div>
+        <div class="k" style="font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);font-weight:600">
+          Average price, last 30 days</div>
+        <div style="margin:8px 0 14px">${sparkline(r.spark)}</div>
+        <table style="font-size:12.5px">
+          <tbody>
+            <tr><td style="text-align:left">Fair value</td><td>${r.fair ? num(r.fair) : "—"}</td></tr>
+            <tr><td style="text-align:left">Best bid now</td><td>${num(r.bid)} <span class="dim">(${abbr(r.bidDepth)} queued)</span></td></tr>
+            <tr><td style="text-align:left">Cheapest listing</td><td>${num(r.ask)} <span class="dim">(${abbr(r.askDepth)} queued)</span></td></tr>
+            <tr><td style="text-align:left">Traded</td><td>${r.traded} of last ${r.tracked} days</td></tr>
+          </tbody>
+        </table>
+        ${r.flagged ? `<p class="hint" style="color:#e0b45e;margin-top:10px">
+          The cheapest listing sits well above fair value, so the sell price here is capped at what
+          the item actually trades for rather than at the asking price.</p>` : ""}
+      </div>
+    </div>`;
+  if (!quiet) host.scrollIntoView({ behavior:"smooth", block:"nearest" });
+}
+
+/* --------------------------------------------------------------------- */
+function initMarket(){
+  $$("nav.tabs button").forEach(b => b.addEventListener("click", () => {
+    if (b.dataset.view === "market") loadMarket();
+  }));
+  const redraw = () => { if (state.market) renderMarket(); };
+  ["#mktSearch","#mktMaxPrice","#mktMinMargin","#mktMinVol","#mktReliability"]
+    .forEach(sel => { const el = $(sel); el.oninput = redraw; el.onchange = redraw; });
+  $("#mktCapital").oninput = e => {
+    state.mktCapital = Number(String(e.target.value).replace(/[^\d]/g, "")) || 0;
+    redraw();
+  };
+  $("#mktReset").onclick = () => {
+    $("#mktSearch").value = ""; $("#mktCapital").value = "";
+    $("#mktMaxPrice").value = ""; $("#mktMinMargin").value = "0";
+    $("#mktMinVol").value = "0"; $("#mktReliability").value = "0";
+    state.mktCapital = 0; state.mktSort = { key:"potential", dir:-1 };
+    redraw();
+  };
+}
+</script>
+<script>
+"use strict";
+
+/* =====================================================================
+   Item creation — INSTANT combinations only.
+
+   Deliberately excludes skill activities like smelting bars or making
+   planks. Those are things you sit in: the rate depends on your level,
+   gear and boosts, none of which this page knows, so any "profit" figure
+   next to them would be invented. Everything here is buy parts → click →
+   done, where the profit is a fact rather than a rate.
+
+   Recipes are curated from the wiki, not discovered from the API, because
+   nothing in the game data reliably separates an instant combination from
+   a timed skill task.
+   ===================================================================== */
+
+Object.assign(state, {
+  craft:null,
+  craftSort:{ key:"profit", dir:-1 },
+  craftWho:"", craftExit:"instant", craftAffordable:false
+});
+
+/* Equipment combinations — idleclans.wiki/w/Item_creation */
+const CREATION = [
+  ["Primeval fangblade",              10, {smithing:90},                           [["Astronomical bar",1],["Primeval fang",1],["Potion of ancient knowledge",25]]],
+  ["Divine hide buckler",             25, {smithing:100, crafting:95},              [["Divine buckler",1],["Blessed crocodile hide",5]]],
+  ["Naga's blessed crown",            25, {smithing:105},                           [["Naga's crown",1],["Sobek's charm",1]]],
+  ["Grimwark's shield",               10, {smithing:105, crafting:105, defence:105},[["Grimwark's sigil",1],["Bulwark shield",1]]],
+  ["Otherworldly dragonscale shield", 25, {smithing:112, crafting:110},             [["Otherworldly coreplate",1],["Dragonscale shield",1]]],
+  ["Otherworldly DS crossbow",        25, {smithing:115, crafting:115, archery:115},[["Otherworldly crossbow",1],["Dragon slayers crossbow",1],["Ancient crossbow string",1]]],
+  ["Citadel helmet",                  25, {smithing:70, crafting:70},               [["Citadel helmet component",1],["Warrior's helmet",1]]],
+  ["Citadel platelegs",               25, {smithing:70, crafting:70},               [["Citadel platelegs component",1],["Warrior's platelegs",1]]],
+  ["Citadel platebody",               25, {smithing:70, crafting:70},               [["Citadel platebody component",1],["Warrior's platebody",1]]],
+  ["Pharao's boots",                  25, {smithing:102, crafting:98},              [["Pharao's thread",1],["Ancient boots",1]]],
+  ["Demonhide boots",                 25, {smithing:104, crafting:101},             [["Ashenmane's fur",1],["Behemoth hide boots",1]]],
+  ["Silhenik's lunar belt",           25, {smithing:107, crafting:104},             [["Silhenik's seal",1],["Lunar belt",1]]],
+  ["Primordial hide hat",             25, {smithing:109, crafting:106},             [["Primordial hide",1],["Drake hide hat",1]]]
+];
+
+/* Jewelry — symbol + base piece, all instant. idleclans.wiki/w/Symbol */
+for (const [tier, lvl] of [["Silver",30], ["Gold",50], ["Diamond",75]]){
+  for (const [sym, piece] of [
+    ["precision","ring"], ["berserker","ring"], ["arcane","ring"],
+    ["marksman","bracelet"], ["brute","bracelet"], ["sorcerer","bracelet"]
+  ]){
+    CREATION.push([`${tier} ${sym} ${piece}`, 0, { smithing: lvl },
+      [[`${tier} ${piece}`, 1], [`${tier} ${sym} symbol`, 1]]]);
+  }
+}
+
+/* --------------------------------------------------------------------- */
+function buildCreation(){
+  const m = state.market;
+  if (!m) return;
+
+  const nameById = new Map();
+  if (state.items) for (const it of state.items.values()) nameById.set(it.id, it.name);
+  const idOf = nm => {
+    const it = state.items ? state.items.get(String(nm).toLowerCase()) : null;
+    return it ? it.id : null;
+  };
+
+  const priced = [], unknown = new Set();
+  let unpriced = 0;
+
+  for (const [outName, secs, reqs, inputs] of CREATION){
+    const outId = idOf(outName);
+    if (outId == null){ unknown.add(outName); continue; }
+
+    const parts = [];
+    let bad = false;
+    for (const [nm, qty] of inputs){
+      const id = idOf(nm);
+      if (id == null){ unknown.add(nm); bad = true; break; }
+      parts.push({ id, qty, name: nameById.get(id) || nm });
+    }
+    if (bad) continue;
+
+    const op = m.priceById.get(outId);
+    if (!op || !op.highestBuyPrice){ unpriced++; continue; }
+
+    let cost = 0, patientCost = 0, depth = Infinity;
+    for (const p of parts){
+      const ip = m.priceById.get(p.id);
+      if (!ip || !ip.lowestSellPrice){ bad = true; break; }
+      p.buyNow = ip.lowestSellPrice;                 // take the cheapest listing
+      p.offer  = (ip.highestBuyPrice || 0) + 1;      // or queue a buy offer
+      cost        += p.buyNow * p.qty;
+      patientCost += p.offer  * p.qty;
+      depth = Math.min(depth, Math.floor((ip.lowestPriceVolume || 0) / p.qty));
+    }
+    if (bad){ unpriced++; continue; }
+
+    const stat   = m.statsById.get(outId);
+    const fair   = stat ? stat.fair : (op.dailyAveragePrice || 0);
+    const relPct = stat ? stat.relPct : 0;
+
+    const instantPrice = op.highestBuyPrice || 0;
+    const patientPrice = Math.max(0, fair
+      ? Math.min((op.lowestSellPrice || 0) - 1, Math.round(fair * MKT.FAIR_HEADROOM))
+      : (op.lowestSellPrice || 0) - 1);
+
+    priced.push({
+      outId, outName: nameById.get(outId) || outName, secs, parts, fair, relPct,
+      reqs: Object.entries(reqs).map(([skill, level]) => ({ skill, level })),
+      cost, patientCost, instantPrice, patientPrice,
+      instantRevenue: instantPrice * (1 - MKT.TAX),
+      patientRevenue: patientPrice * (1 - MKT.TAX),
+      instantProfit:  instantPrice * (1 - MKT.TAX) - cost,
+      patientProfit:  patientPrice * (1 - MKT.TAX) - patientCost,
+      instantDepth: Math.max(0, Math.min(depth, Math.floor(op.highestPriceVolume || 0))),
+      patientDepth: Math.max(0, depth)
+    });
+  }
+
+  state.craft = { priced, unknown:[...unknown], unpriced, total:CREATION.length };
+
+  const sel = $("#craftWho");
+  if (sel.options.length <= 1 && state.members.length){
+    sel.innerHTML = '<option value="">Anyone\'s levels</option>' +
+      state.members.map(x => `<option value="${esc(x.name)}">${esc(x.name)}</option>`).join("");
+  }
+  $("#craftPanel").hidden = false;
+  renderCreation();
+}
+
+/* --------------------------------------------------------------------- */
+function craftRows(){
+  const c = state.craft;
+  if (!c) return [];
+  const instant = state.craftExit === "instant";
+  const who = state.craftWho ? state.byName.get(state.craftWho) : null;
+
+  return c.priced.filter(p => {
+    const profit = instant ? p.instantProfit : p.patientProfit;
+    const depth  = instant ? p.instantDepth  : p.patientDepth;
+    if (profit <= 0 || depth < 1) return false;
+    if (who && p.reqs.some(q => {
+      const s = who.skills.find(x => x.key === q.skill);
+      return s && s.level < q.level;
+    })) return false;
+    if (state.craftAffordable && state.mktCapital){
+      if ((instant ? p.cost : p.patientCost) > state.mktCapital) return false;
+    }
+    return true;
+  }).map(p => {
+    const unitCost = instant ? p.cost : p.patientCost;
+    const askPrice = instant ? p.instantPrice : p.patientPrice;
+    const revenue  = instant ? p.instantRevenue : p.patientRevenue;
+    const each     = instant ? p.instantProfit : p.patientProfit;
+    const depth    = instant ? p.instantDepth : p.patientDepth;
+    const byCash   = state.mktCapital ? Math.floor(state.mktCapital / unitCost) : Infinity;
+    const qty      = Math.max(0, Math.min(depth, byCash));
+    return { ...p, unitCost, askPrice, revenue, each, depth, qty,
+             profit: each * qty, marginPct: unitCost ? each / unitCost * 100 : 0 };
+  });
+}
+
+const CRAFT_COLS = [
+  { key:"name",   label:"Creates",      get:r => r.outName, cell:r => esc(r.outName) },
+  { key:"reqs",   label:"Needs",        get:r => r.reqs[0] ? r.reqs[0].level : 0,
+    cell:r => `<span class="dim">${r.reqs.map(q => `${KEY_TO_LABEL[q.skill] || q.skill} ${q.level}`).join(", ")}</span>` },
+  { key:"parts",  label:"Parts",        get:r => r.parts.length,
+    cell:r => `<span class="dim">${r.parts.map(p => `${p.qty}× ${esc(p.name)}`).join(" + ")}</span>` },
+  { key:"cost",   label:"Parts cost",   get:r => r.unitCost, cell:r => abbr(r.unitCost) },
+  { key:"rev",    label:"Sells for",    get:r => r.revenue,
+    cell:r => `${abbr(r.askPrice)} <span class="dim">→ ${abbr(r.revenue)}</span>` },
+  { key:"each",   label:"Profit each",  get:r => r.each, cell:r => `<span class="pos">${abbr(r.each)}</span>` },
+  { key:"margin", label:"Margin",       get:r => r.marginPct, cell:r => r.marginPct.toFixed(1) + "%" },
+  { key:"qty",    label:"Can make now", get:r => r.qty, cell:r => num(r.qty) },
+  { key:"profit", label:"Profit",       get:r => r.profit,
+    cell:r => `<strong class="pos">${abbr(r.profit)}</strong>` },
+  { key:"rel",    label:"Output trades",get:r => r.relPct,
+    cell:r => `<span class="pill ${reliabilityClass(r.relPct)}">${reliabilityWords(r.relPct)}</span>` }
+];
+
+/** How many would be profitable under the other exit — for the empty state. */
+function craftRowsOther(mode){
+  const keep = state.craftExit;
+  state.craftExit = mode;
+  const n = craftRows().length;
+  state.craftExit = keep;
+  return n;
+}
+
+function renderCreation(){
+  const c = state.craft;
+  const instant = state.craftExit === "instant";
+  const rows = craftRows();
+  const col = CRAFT_COLS.find(x => x.key === state.craftSort.key) || CRAFT_COLS[8];
+  rows.sort((a,b) => {
+    const av = col.get(a), bv = col.get(b);
+    if (typeof av === "string" || typeof bv === "string")
+      return state.craftSort.dir * String(av).localeCompare(String(bv));
+    return state.craftSort.dir * ((av||0) - (bv||0));
+  });
+
+  $("#craftHint").textContent = instant
+    ? "Buy the parts at their asking price, combine, and sell straight into the standing buy offer. Instant both ways."
+    : "Queue buy offers for the parts, combine, then list the result near what it actually trades for. Better margin, but you wait for fills.";
+
+  const missing = c.unknown.length
+    ? ` · ${c.unknown.length} item name${c.unknown.length===1?"":"s"} not found in the game data`
+    : "";
+  $("#craftCount").textContent =
+    `${rows.length} worth doing of ${c.priced.length} priced · ${c.total} instant recipes known${missing}`;
+
+  if (!rows.length){
+    const other = craftRowsOther(instant ? "patient" : "instant");
+    $("#craftTable").innerHTML = `<tbody><tr><td class="dim" style="padding:20px 0">
+      Nothing is worth creating right now under these settings.${
+        other ? ` ${other} would pay under <strong>${
+          instant ? "List it and wait" : "Sell instantly into the bid"}</strong>.` : ""}
+      </td></tr></tbody>`;
+    $("#craftDetail").hidden = true;
+    return;
+  }
+
+  $("#craftTable").innerHTML =
+    `<thead><tr>${CRAFT_COLS.map(x => `<th data-k="${x.key}">${x.label}${
+      state.craftSort.key === x.key ? `<span class="ar">${state.craftSort.dir === -1 ? "▼" : "▲"}</span>` : ""}</th>`).join("")}</tr></thead>
+     <tbody>${rows.slice(0,60).map((r,i) => `<tr data-i="${i}">${
+       CRAFT_COLS.map(x => `<td>${x.cell(r)}</td>`).join("")}</tr>`).join("")}</tbody>`;
+
+  $$("#craftTable thead th").forEach(th => th.onclick = () => {
+    const k = th.dataset.k;
+    if (state.craftSort.key === k) state.craftSort.dir *= -1;
+    else state.craftSort = { key:k, dir: k === "name" ? 1 : -1 };
+    renderCreation();
+  });
+  $$("#craftTable tbody tr").forEach(tr => tr.onclick = () => showCraft(rows[+tr.dataset.i]));
+}
+
+function showCraft(r){
+  const host = $("#craftDetail");
+  if (!r){ host.hidden = true; return; }
+  const instant = state.craftExit === "instant";
+  host.hidden = false;
+  host.innerHTML = `
+    <h2>${esc(r.outName)}</h2>
+    <p class="hint">${r.reqs.map(q => `${esc(KEY_TO_LABEL[q.skill] || q.skill)} ${q.level}`).join(" · ")} ·
+      ${r.secs ? r.secs + "s to make" : "instant"} · output ${reliabilityWords(r.relPct).toLowerCase()}</p>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
+      <div>
+        <div class="k" style="font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;
+             color:var(--text-muted);font-weight:600;margin-bottom:8px">
+          ${instant ? "Buy these now" : "Place buy offers for these"}</div>
+        <table style="font-size:12.5px"><tbody>
+          ${r.parts.map(p => `<tr>
+            <td style="text-align:left">${p.qty}× ${esc(p.name)}</td>
+            <td>${num(instant ? p.buyNow : p.offer)} each</td>
+            <td>${abbr((instant ? p.buyNow : p.offer) * p.qty)}</td></tr>`).join("")}
+          <tr style="border-top:1px solid var(--border)">
+            <td style="text-align:left"><strong>Total per craft</strong></td><td></td>
+            <td><strong>${num(r.unitCost)}</strong></td></tr>
+        </tbody></table>
+      </div>
+      <div>
+        <div class="tile" style="background:var(--surface-2)">
+          <div class="k">${instant ? "Sell into the standing offer at" : "List it at"}</div>
+          <div class="v">${num(r.askPrice)}</div>
+          <div class="m">${num(Math.round(r.revenue))} after the 1% tax</div>
+        </div>
+        <div class="tile" style="background:#199e7014;border-color:#199e7044;margin-top:10px">
+          <div class="k">Profit</div>
+          <div class="v pos">${abbr(r.each)} <span class="dim" style="font-size:14px">each</span></div>
+          <div class="m">${num(r.qty)} possible right now → <strong>${abbr(r.profit)}</strong></div>
+        </div>
+        ${instant ? "" : `<p class="hint" style="margin-top:10px">
+          Both sides need to fill. The listing price is capped at what the item actually trades
+          for, not at whatever the cheapest listing happens to be.</p>`}
+      </div>
+    </div>`;
+  host.scrollIntoView({ behavior:"smooth", block:"nearest" });
+}
+
+/* --------------------------------------------------------------------- */
+function initCreation(){
+  const redraw = () => { if (state.craft) renderCreation(); };
+  $("#craftWho").onchange = e => { state.craftWho = e.target.value; redraw(); };
+  $("#craftExit").onchange = e => { state.craftExit = e.target.value; redraw(); };
+  $("#craftAffordable").onchange = e => { state.craftAffordable = e.target.checked; redraw(); };
+}
+</script>
+<script>
+"use strict";
 initControls();
 initExtras();
+initMarket();
+initCreation();
 loadAll();
 setInterval(loadAll, REFRESH_MS);
 </script>
