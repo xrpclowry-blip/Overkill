@@ -375,7 +375,8 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
     <div class="tiles" id="rankTiles"></div>
     <div class="banner warn" style="margin:0 0 16px">
       <div>These rankings measure <strong>experience earned in a rolling window</strong> — they move hour to hour
-      and are not the clan rank the game shows you. The public API doesn't expose that one.</div>
+      and are not the clan rank the game shows you. The public API doesn't expose that one, and each board
+      only lists its top slice, so clans below the cut show as unranked rather than at a real position.</div>
     </div>
     <div class="panel">
       <h2>Clan rank by skill</h2>
@@ -1580,8 +1581,8 @@ function renderRanks(){
   const ahead = (board && state.worldRank > 1) ? board[state.worldRank - 2] : null;
 
   $("#rankTiles").innerHTML = [
-    tile("Weekly xp rank", state.worldRank ? "#" + state.worldRank : "outside top " + BOARD_LIMIT,
-         board ? `of ${board.length} clans · not your in-game clan rank` : ""),
+    tile("Weekly xp rank", state.worldRank ? "#" + state.worldRank : "unranked",
+         board ? `of ${board.length} clans listed · not your in-game clan rank` : ""),
     tile("Clan xp · 7 days", mine ? abbr(mine.totalExperience) : "—",
          leader ? `leader ${esc(leader.clanName)} at ${abbr(leader.totalExperience)}` : ""),
     tile("Gap to first", gap ? abbr(gap) : "—", gap && mine ? `${(leader.totalExperience/mine.totalExperience).toFixed(1)}× our weekly total` : ""),
@@ -1596,15 +1597,18 @@ function renderRanks(){
   } else {
     const rows = [...state.skillRanks].sort((a,b) => (a.rank ?? 9e9) - (b.rank ?? 9e9));
     const best = rows.filter(r => r.rank).length;
+    // The API decides how deep each leaderboard goes; never assume it matches
+    // what we asked for. Report the depth it actually returned.
+    const depth = Math.max(0, ...rows.map(r => r.depth || 0));
     $("#rankHint").textContent =
       `Placement among all clans for experience earned in the last 7 days · ranked in ${best} of ${rows.length} skills` +
-      ` · outside the top ${BOARD_LIMIT} counts as unranked`;
+      (depth ? ` · these boards only list the top ${depth}, so anything below that shows as unranked` : "");
     $("#rankSkills").innerHTML =
       `<div class="tbl-scroll"><table>
         <thead><tr><th>Skill</th><th>World rank</th><th>Our xp</th><th>Contributors</th><th>Leader</th></tr></thead>
         <tbody>${rows.map(r => `<tr>
           <td>${esc(r.label)}</td>
-          <td>${r.rank ? rankBadge(r.rank) : `<span class="dim">&gt;${BOARD_LIMIT}</span>`}</td>
+          <td>${r.rank ? rankBadge(r.rank) : '<span class="dim">unranked</span>'}</td>
           <td>${r.experience ? abbr(r.experience) : '<span class="dim">—</span>'}</td>
           <td>${r.contributors ? num(r.contributors) : '<span class="dim">—</span>'}</td>
           <td class="dim">${r.leader ? esc(r.leader) + " · " + abbr(r.leaderXp) : "—"}</td>
