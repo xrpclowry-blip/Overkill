@@ -1015,7 +1015,16 @@ async function loadAll(){
     api(`/api/Clan/${encodeURIComponent(CLAN)}/experience?hours=168`, { optional:true }),
     api(`/api/Clan/${encodeURIComponent(CLAN)}/experience/timeline?hours=168`, { optional:true }),
     loadLogs(),
-    pooled(names, n => api(`/api/Player/profile/${encodeURIComponent(n)}`, { optional:true }), 5)
+    // One retry: under load the API refuses a few of these, and a blank member
+    // row is worse than waiting half a second.
+    pooled(names, async n => {
+      const path = `/api/Player/profile/${encodeURIComponent(n)}`;
+      try { return await api(path); }
+      catch {
+        await new Promise(r => setTimeout(r, 600));
+        return await api(path, { optional:true });
+      }
+    }, 4)
   ]);
 
   state.items.clear();
@@ -1897,7 +1906,7 @@ const MKT = {
   FAIR_HEADROOM: 1.05,  // don't plan to sell more than 5% above fair value
   FANTASY: 1.25,        // an ask this far above fair value isn't a real price
   THIN: 0.34,           // trades on fewer than a third of days = unreliable
-  VERIFY: 150,          // how many candidates get a 30-day history call
+  VERIFY_TOP: 12,       // best rows quietly verified after the table renders
   FLOOR: 25000,         // don't spend a call on an opportunity smaller than this
   MIN_DEPTH: 5          // units queued each side to trust an unverified item
 };
@@ -2014,87 +2023,109 @@ async function loadMarket(){
       flagged: avg ? ask > avg * MKT.FANTASY : false });
   }
 
-  /* ---- stage 2: verify the most promising with real trade history ---- */
-  /* Rough gold on the table, used only to decide what deserves a history call.
-     The spread is capped at 30% so an unanchored asking price can't inflate it,
-     and depth is the binding side — an item with two units queued cannot carry
-     a position however wide its spread looks. */
-  const potential = c =>
-    c.bid * Math.min(c.rawSpread, 0.30) * Math.min(c.bidDepth, c.askDepth);
-
-  const worth = [], tooSmall = [];
-  for (const c of candidates) (potential(c) >= MKT.FLOOR ? worth : tooSmall).push(c);
-  for (const c of tooSmall){
-    rejects.push({ ...c, apparent:c.marginPct,
-      reason:`Too little on the table — about ${abbr(potential(c))} at best` });
+  /* No burst of per-item calls on load. Verifying 150 items up front hammered
+     the API hard enough that it began refusing the clan's own member-profile
+     requests. History is now folded in from the free bulk feed where it exists,
+     a dozen of the best rows are verified quietly afterwards, and any row you
+     open fetches its own. */
+  for (const c of candidates){
+    const rows = days.get(c.id);
+    if (rows && rows.length) applyHistory(c, rows);
   }
 
-  const ranked = worth.sort((a,b) => potential(b) - potential(a));
-  const check = ranked.slice(0, MKT.VERIFY);
-  const skipped = ranked.slice(MKT.VERIFY);
+  /* Drop opportunities too small to be worth a row. The spread is capped at 30%
+     so an unanchored asking price can't inflate it, and depth is the binding
+     side — two units queued caps the whole thing however wide the gap looks. */
+  const potential = c =>
+    c.bid * Math.min(c.rawSpread, 0.30) * Math.min(c.bidDepth, c.askDepth);
+  const worth = [];
+  for (const c of candidates){
+    if (potential(c) >= MKT.FLOOR) worth.push(c);
+    else rejects.push({ ...c, apparent:c.marginPct,
+      reason:`Too little on the table — about ${abbr(potential(c))} at best` });
+  }
+  worth.sort((a,b) => potential(b) - potential(a));
 
-  $("#mktLoadingText").textContent =
-    `Screened ${candidates.length} candidates from ${live.length} items — checking trade history for ${check.length}…`;
+  state.market = {
+    candidates: worth, rejectsBase: rejects, scanned: (live||[]).length, at: new Date(),
+    priceById: new Map((live||[]).map(p => [p.itemId, p]))
+  };
+  classify();
+  state.marketLoading = false;
+  $("#mktLoading").hidden = true;
+  $("#mktBody").hidden = false;
+  renderMarket();
+  if (typeof buildCreation === "function") buildCreation();
+  verifyTop();
+}
 
-  /* Firing these ten-at-a-time got most of them refused, and a refused call is
-     indistinguishable from "this item has no history" unless we count them.
-     Go gentler, retry once, and keep score. */
-  const tally = { ok:0, empty:0, failed:0 };
-  await pooled(check, async c => {
-    let rows = days.get(c.id);
-    if (!rows || !rows.length){
-      try {
-        rows = await api(`/api/PlayerMarket/items/prices/history/${c.id}?period=30d`);
-      } catch {
-        await new Promise(r => setTimeout(r, 500));
-        try {
-          rows = await api(`/api/PlayerMarket/items/prices/history/${c.id}?period=30d`);
-        } catch { tally.failed++; return; }
-      }
-    }
-    if (!Array.isArray(rows) || !rows.length){ tally.empty++; return; }
-    tally.ok++;
-    rows.sort((a,b) => a.timestamp < b.timestamp ? -1 : 1);
-    c.tracked   = rows.length;
-    c.traded    = rows.filter(h => (h.tradeVolume||0) > 0).length;
-    c.relPct    = Math.round(c.traded / c.tracked * 100);
-    c.volPerDay = rows.reduce((s,h) => s + (h.tradeVolume||0), 0) / c.tracked;
-    c.spark     = rows.map(h => h.averagePrice || 0);
-    const med   = median(c.spark);
-    if (med) c.fair = med;
-    c.turnover  = c.volPerDay * c.fair;
-  }, 4);
+/** Fold 30 days of history into a candidate. */
+function applyHistory(c, rows){
+  const sorted = [...rows].sort((a,b) => a.timestamp < b.timestamp ? -1 : 1);
+  c.tracked   = sorted.length;
+  c.traded    = sorted.filter(h => (h.tradeVolume||0) > 0).length;
+  c.relPct    = Math.round(c.traded / c.tracked * 100);
+  c.volPerDay = sorted.reduce((s,h) => s + (h.tradeVolume||0), 0) / c.tracked;
+  c.spark     = sorted.map(h => h.averagePrice || 0);
+  const med   = median(c.spark);
+  if (med) c.fair = med;
+  c.turnover  = c.volPerDay * c.fair;
+}
 
-  /* ---- apply the liquidity rules only where we actually know the volume ---- */
-  const skippedSet = new Set(skipped);
+/** Fetch one item's history on demand. True if it told us something new. */
+async function verifyItem(c){
+  if (!c || c.relPct != null || c.verifying) return false;
+  c.verifying = true;
+  try {
+    const rows = await api(`/api/PlayerMarket/items/prices/history/${c.id}?period=30d`);
+    if (Array.isArray(rows) && rows.length){ applyHistory(c, rows); return true; }
+  } catch { /* stays unverified, and the label says so */ }
+  finally { c.verifying = false; }
+  return false;
+}
+
+/** Quietly verify the strongest rows once the table is already usable. */
+async function verifyTop(){
+  const m = state.market;
+  if (!m) return;
+  const pick = m.candidates.filter(c => c.relPct == null).slice(0, MKT.VERIFY_TOP);
+  let changed = false;
+  await pooled(pick, async c => { if (await verifyItem(c)) changed = true; }, 2);
+  if (changed && state.market === m){ classify(); renderMarket(); }
+}
+
+/* Sort candidates into shown rows and skipped ones. Re-runs whenever new
+   history lands, so a row can move to the skipped list once we know more. */
+function classify(){
+  const m = state.market;
+  const rejects = [...m.rejectsBase];
   const rows = [];
-  for (const c of worth){
-    const verified = c.relPct != null;
-    if (verified){
+  for (const c of m.candidates){
+    if (c.relPct != null){
       if (c.relPct < MKT.THIN * 100){
         rejects.push({ ...c, reason:`Only trades ${c.traded} of the last ${c.tracked} days`,
                        apparent:c.marginPct }); continue;
       }
       if (c.volPerDay < 1){
-        rejects.push({ ...c, reason:"Almost no volume — you'd be the market", apparent:c.marginPct }); continue;
+        rejects.push({ ...c, reason:"Almost no volume — you'd be the market",
+                       apparent:c.marginPct }); continue;
       }
-      // A better fair value can move the sensible listing price.
       const capped = Math.round(c.fair * MKT.FAIR_HEADROOM);
       c.listAt = Math.min(c.ask - 1, capped);
       c.profitPerUnit = c.listAt * (1 - MKT.TAX) - c.buyAt;
-      c.marginPct = c.profitPerUnit / c.buyAt * 100;
+      c.marginPct = c.buyAt ? c.profitPerUnit / c.buyAt * 100 : 0;
       if (c.profitPerUnit <= 0){
         rejects.push({ ...c, reason:`Listed at ${abbr(c.ask)} but only worth about ${abbr(c.fair)}`,
                        apparent:c.marginPct }); continue;
       }
       c.safeQty = Math.floor(c.volPerDay * MKT.SHARE);
       if (c.safeQty < 1){
-        rejects.push({ ...c, reason:"Too thin to take a position inside a day", apparent:c.marginPct }); continue;
+        rejects.push({ ...c, reason:"Too thin to take a position inside a day",
+                       apparent:c.marginPct }); continue;
       }
     } else if (c.dailyAvg && Math.min(c.bidDepth, c.askDepth) >= MKT.MIN_DEPTH){
-      // Weaker evidence than 30 days of volume, but it is real: it changed hands
-      // today and there is depth queued on both sides. Size off the book and be
-      // explicit that it isn't verified.
+      // Weaker than 30 days of volume but still real: it changed hands today and
+      // there is depth queued both sides. Size off the book, label it unverified.
       c.safeQty = Math.min(c.bidDepth, c.askDepth);
     } else {
       rejects.push({ ...c, apparent:c.marginPct,
@@ -2105,20 +2136,11 @@ async function loadMarket(){
     }
     rows.push(c);
   }
-
   rejects.sort((a,b) => b.apparent - a.apparent);
-  state.market = {
-    rows, rejects, scanned:(live||[]).length, at:new Date(),
-    verified: worth.filter(c => c.relPct != null).length,
-    candidates: worth.length, attempted: check.length, tally,
-    priceById: new Map((live||[]).map(p => [p.itemId, p])),
-    statsById: new Map(rows.concat(rejects).map(r => [r.id, r]))
-  };
-  state.marketLoading = false;
-  $("#mktLoading").hidden = true;
-  $("#mktBody").hidden = false;
-  renderMarket();
-  if (typeof buildCreation === "function") buildCreation();
+  m.rows = rows;
+  m.rejects = rejects;
+  m.verified = m.candidates.filter(c => c.relPct != null).length;
+  m.statsById = new Map(rows.concat(rejects).map(r => [r.id, r]));
 }
 
 /* --------------------------------------------------------------------- */
@@ -2189,13 +2211,9 @@ function renderMarket(){
     tile("Skipped", num(m.rejects.length), "shown below with reasons")
   ].join("");
 
-  const t = m.tally || { failed:0, empty:0 };
   $("#mktCount").textContent =
-    `${rows.length} of ${m.rows.length} shown · ${m.verified} of ${m.candidates} candidates verified ` +
-    `against 30 days of trade history` +
-    (t.failed ? ` · ${t.failed} history request${t.failed===1?"":"s"} were refused (likely rate limited)` : "") +
-    (t.empty ? ` · ${t.empty} had no history at all` : "") +
-    ` · positions capped at ${MKT.SHARE*100}% of a day's volume · ` +
+    `${rows.length} of ${m.rows.length} shown · ${m.verified} of ${m.candidates.length} verified ` +
+    `against 30 days of history (open a row to verify it) · ` +
     `prices read ${m.at.toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"})}`;
 
   renderRejects();
@@ -2264,11 +2282,17 @@ function sparkline(values){
       stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 }
 
-function showMarketItem(id, quiet){
+async function showMarketItem(id, quiet){
   const r = (state.market.rows || []).find(x => x.id === id);
   const host = $("#mktDetail");
   if (!r){ host.hidden = true; return; }
   state.mktPick = id;
+  // Opening a row is the moment its history is actually worth fetching.
+  if (r.relPct == null && !r.verifying){
+    verifyItem(r).then(changed => {
+      if (changed && state.market && state.mktPick === id){ classify(); renderMarket(); }
+    });
+  }
   const s = sized(r);
   host.hidden = false;
   host.innerHTML = `
