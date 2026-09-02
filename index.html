@@ -2350,7 +2350,7 @@ const CREATION = [
   ["Citadel platebody",               25, {smithing:70, crafting:70},               [["Citadel platebody component",1],["Warrior's platebody",1]]],
   ["Pharao's boots",                  25, {smithing:102, crafting:98},              [["Pharao's thread",1],["Ancient boots",1]]],
   ["Demonhide boots",                 25, {smithing:104, crafting:101},             [["Ashenmane's fur",1],["Behemoth hide boots",1]]],
-  ["Silhenik's lunar belt",           25, {smithing:107, crafting:104},             [["Silhenik's seal",1],["Lunar belt",1]]],
+  ["Silhenik's lunar belt",           25, {smithing:107, crafting:104},             [["Silhenik's seal",1],[["Lunar belt","Belt of the moon"],1]]],
   ["Primordial hide hat",             25, {smithing:109, crafting:106},             [["Primordial hide",1],["Drake hide hat",1]]]
 ];
 
@@ -2385,26 +2385,80 @@ function buildCreation(){
       if (n && !index.has(n)) index.set(n, it);
     }
   }
-  const idOf = nm => {
-    const it = index.get(norm(nm));
-    return it ? it.id : null;
-  };
-  const isLocKey = t => /^[a-z0-9_]+$/.test(String(t || ""));
-  const display = (id, curated) => {
-    const api = state.items ? [...state.items.values()].find(i => i.id === id) : null;
-    return (api && !isLocKey(api.name)) ? api.name : curated;
+  /* One inserted, deleted or substituted character — nothing looser.
+     Prefix matching was tempting and wrong: "plate" is the first five letters
+     of both platebody and platelegs, which would price the Citadel recipes
+     off the wrong item entirely. */
+  const within1 = (a, b) => {
+    if (a === b) return true;
+    const la = a.length, lb = b.length;
+    if (Math.abs(la - lb) > 1) return false;
+    let i = 0, j = 0, edits = 0;
+    while (i < la && j < lb){
+      if (a[i] === b[j]){ i++; j++; continue; }
+      if (++edits > 1) return false;
+      if (la > lb) i++; else if (lb > la) j++; else { i++; j++; }
+    }
+    if (i < la || j < lb) edits++;
+    return edits <= 1;
   };
 
-  /* When a name doesn't resolve, suggest the closest real item names rather
-     than just reporting a miss — the game's spelling is usually one word off. */
+  const looseFind = nm => {
+    const want = norm(nm).split(" ").filter(Boolean);
+    for (const [key, it] of index){
+      const have = key.split(" ").filter(Boolean);
+      if (have.length !== want.length) continue;      // same shape only
+      let fuzzy = 0, ok = true;
+      for (let i = 0; i < want.length; i++){
+        if (want[i] === have[i]) continue;
+        // Short words are never fuzzy-matched: ring/gold/iron differ by one
+        // letter from plenty of unrelated things.
+        if (want[i].length < 5 || have[i].length < 5 || !within1(want[i], have[i])){ ok = false; break; }
+        if (++fuzzy > 1){ ok = false; break; }          // at most one word may differ
+      }
+      if (ok) return it;
+    }
+    return null;
+  };
+  const idOf = nm => {
+    for (const one of (Array.isArray(nm) ? nm : [nm])){
+      const exact = index.get(norm(one));
+      if (exact) return exact.id;
+    }
+    for (const one of (Array.isArray(nm) ? nm : [nm])){
+      const near = looseFind(one);
+      if (near) return near.id;
+    }
+    return null;
+  };
+  const label = nm => Array.isArray(nm) ? nm[0] : nm;
+  const display = (id, curated) => {
+    const api = state.items ? [...state.items.values()].find(i => i.id === id) : null;
+    return api && api.name ? itemLabel(api.name) : curated;
+  };
+
+  /* When a name doesn't resolve, suggest the closest real items. Weight rare
+     words far above common ones — "shield" and "boots" appear on dozens of
+     items, so matching them is nearly worthless, while "grimwark" is decisive.
+     Also match words that are one or two characters apart, since that is what
+     Pharao/Pharaoh and Grimwark/Grimwarks actually are. */
+  const freq = new Map();
+  for (const key of index.keys())
+    for (const w of key.split(" ")) freq.set(w, (freq.get(w) || 0) + 1);
+  const weight = w => 1 / Math.log2(2 + (freq.get(w) || 0));
+
+  const close = (a, b) =>
+    a === b || (a.length >= 5 && b.length >= 5 && a.slice(0,5) === b.slice(0,5));
+
   const nearest = (target, n = 3) => {
-    const want = new Set(norm(target).split(" ").filter(Boolean));
+    const want = norm(target).split(" ").filter(Boolean);
+    const total = want.reduce((s,w) => s + weight(w), 0) || 1;
     const scored = [];
     for (const [key, it] of index){
-      const have = new Set(key.split(" ").filter(Boolean));
+      const have = key.split(" ").filter(Boolean);
       let hit = 0;
-      for (const w of want) if (have.has(w)) hit++;
-      if (hit) scored.push([hit / Math.max(want.size, have.size), it.name]);
+      for (const w of want) if (have.some(h => close(w, h))) hit += weight(w);
+      if (hit > 0) scored.push([hit / total - have.length * 0.01, it.name]);
     }
     scored.sort((a,b) => b[0] - a[0]);
     return [...new Set(scored.map(x => x[1]))].slice(0, n);
@@ -2416,14 +2470,14 @@ function buildCreation(){
 
   for (const [outName, secs, reqs, inputs] of CREATION){
     const outId = idOf(outName);
-    if (outId == null){ noteUnknown(outName); continue; }
+    if (outId == null){ noteUnknown(label(outName)); continue; }
 
     const parts = [];
     let bad = false;
     for (const [nm, qty] of inputs){
       const id = idOf(nm);
-      if (id == null){ noteUnknown(nm); bad = true; break; }
-      parts.push({ id, qty, name: display(id, nm) });
+      if (id == null){ noteUnknown(label(nm)); bad = true; break; }
+      parts.push({ id, qty, name: display(id, label(nm)) });
     }
     if (bad) continue;
 
@@ -2452,7 +2506,7 @@ function buildCreation(){
       : (op.lowestSellPrice || 0) - 1);
 
     priced.push({
-      outId, outName: display(outId, outName), secs, parts, fair, relPct,
+      outId, outName: display(outId, label(outName)), secs, parts, fair, relPct,
       reqs: Object.entries(reqs).map(([skill, level]) => ({ skill, level })),
       cost, patientCost, instantPrice, patientPrice,
       instantRevenue: instantPrice * (1 - MKT.TAX),
@@ -2603,8 +2657,9 @@ function showCraft(r){
              color:var(--text-muted);font-weight:600;margin-bottom:8px">
           ${instant ? "Buy these now" : "Place buy offers for these"}</div>
         <table style="font-size:12.5px"><tbody>
-          ${r.parts.map(p => `<tr>
-            <td style="text-align:left">${p.qty}× ${esc(p.name)}</td>
+          ${r.parts.map(p => `<tr title="item id ${p.id}">
+            <td style="text-align:left">${p.qty}× ${esc(p.name)}
+              <span class="dim" style="font-size:11px">#${p.id}</span></td>
             <td>${num(instant ? p.buyNow : p.offer)} each</td>
             <td>${abbr((instant ? p.buyNow : p.offer) * p.qty)}</td></tr>`).join("")}
           <tr style="border-top:1px solid var(--border)">
