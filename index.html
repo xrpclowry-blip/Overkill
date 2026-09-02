@@ -1898,7 +1898,8 @@ const MKT = {
   FANTASY: 1.25,        // an ask this far above fair value isn't a real price
   THIN: 0.34,           // trades on fewer than a third of days = unreliable
   VERIFY: 150,          // how many candidates get a 30-day history call
-  FLOOR: 25000          // don't spend a call on an opportunity smaller than this
+  FLOOR: 25000,         // don't spend a call on an opportunity smaller than this
+  MIN_DEPTH: 5          // units queued each side to trust an unverified item
 };
 
 Object.assign(state, {
@@ -1935,6 +1936,7 @@ function itemLabel(raw){
 }
 
 function reliabilityWords(pct){
+  if (pct == null) return "Traded today · unverified";
   if (pct >= 90) return "Trades every day";
   if (pct >= 50) return "Trades most days";
   if (pct >= 25) return "A few days a week";
@@ -1942,6 +1944,7 @@ function reliabilityWords(pct){
   return "Never trades";
 }
 function reliabilityClass(pct){
+  if (pct == null) return "off";
   return pct >= 90 ? "on" : pct >= 50 ? "mid" : "off";
 }
 
@@ -2088,12 +2091,16 @@ async function loadMarket(){
       if (c.safeQty < 1){
         rejects.push({ ...c, reason:"Too thin to take a position inside a day", apparent:c.marginPct }); continue;
       }
+    } else if (c.dailyAvg && Math.min(c.bidDepth, c.askDepth) >= MKT.MIN_DEPTH){
+      // Weaker evidence than 30 days of volume, but it is real: it changed hands
+      // today and there is depth queued on both sides. Size off the book and be
+      // explicit that it isn't verified.
+      c.safeQty = Math.min(c.bidDepth, c.askDepth);
     } else {
-      // Unverified means unknown liquidity, and unknown liquidity is exactly how
-      // you end up holding something forever. Never recommend it.
       rejects.push({ ...c, apparent:c.marginPct,
-        reason: skippedSet.has(c) ? `Not checked — outside the top ${MKT.VERIFY} candidates`
-                                  : "No trade history returned — can't confirm it sells" });
+        reason: !c.dailyAvg
+          ? "Didn't trade today and no history to fall back on"
+          : `Only ${num(Math.min(c.bidDepth, c.askDepth))} queued and no trade history` });
       continue;
     }
     rows.push(c);
@@ -2194,10 +2201,10 @@ function renderMarket(){
   renderRejects();
 
   if (!rows.length){
-    $("#mktTable").innerHTML = "";
-    $("#mktCount").textContent = m.rows.length
-      ? "Nothing matches those filters. Loosen them, or check the skipped list below."
-      : "Nothing cleared every check right now. The skipped list below says why for each item.";
+    $("#mktTable").innerHTML = `<tbody><tr><td class="dim" style="padding:18px 0">${
+      m.rows.length ? "Nothing matches those filters — loosen them, or read the skipped list below."
+                    : "Nothing cleared every check right now. The skipped list below says why for each item."
+    }</td></tr></tbody>`;
     return;
   }
 
