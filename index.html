@@ -416,8 +416,9 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
         <div class="controls">
           <input type="search" id="mktSearch" placeholder="Find an item…">
           <label class="dim" style="font-size:12.5px">Gold to deploy
-            <input type="text" id="mktCapital" inputmode="numeric" placeholder="optional"
-                   style="width:110px;margin-left:6px"></label>
+            <input type="text" id="mktCapital" inputmode="text" placeholder="e.g. 50m"
+                   style="width:96px;margin-left:6px"></label>
+          <span class="dim" id="mktCapitalEcho" style="font-size:12px;font-variant-numeric:tabular-nums"></span>
           <select id="mktMaxPrice">
             <option value="">Any unit price</option>
             <option value="100">Under 100 gp</option>
@@ -1911,6 +1912,17 @@ function median(nums){
   const m = v.length >> 1;
   return v.length % 2 ? v[m] : Math.round((v[m-1] + v[m]) / 2);
 }
+/* Players type gold the way the game shows it: 50m, 1kk, 250k, 1.5b.
+   Stripping non-digits turned "1m" into 1 gold, so parse the suffix properly. */
+function parseGold(raw){
+  const t = String(raw || "").toLowerCase().replace(/[\s,_]/g, "");
+  if (!t) return 0;
+  const m = t.match(/^(\d+(?:\.\d+)?)(kk|k|m|b|t)?$/);
+  if (!m) return Math.round(Number(t.replace(/[^\d.]/g, "")) || 0);
+  const mult = { k:1e3, kk:1e6, m:1e6, b:1e9, t:1e12 }[m[2]] || 1;
+  return Math.round(parseFloat(m[1]) * mult);
+}
+
 /* The API returns proper names for some items and raw loc keys for others. */
 function itemLabel(raw){
   const t = String(raw || "");
@@ -2273,11 +2285,14 @@ function initMarket(){
   ["#mktSearch","#mktMaxPrice","#mktMinMargin","#mktMinVol","#mktReliability"]
     .forEach(sel => { const el = $(sel); el.oninput = redraw; el.onchange = redraw; });
   $("#mktCapital").oninput = e => {
-    state.mktCapital = Number(String(e.target.value).replace(/[^\d]/g, "")) || 0;
+    state.mktCapital = parseGold(e.target.value);
+    // Echo what it understood, so a typo is visible rather than silent.
+    $("#mktCapitalEcho").textContent = state.mktCapital
+      ? "= " + num(state.mktCapital) + " gp" : "";
     redraw();
   };
   $("#mktReset").onclick = () => {
-    $("#mktSearch").value = ""; $("#mktCapital").value = "";
+    $("#mktSearch").value = ""; $("#mktCapital").value = ""; $("#mktCapitalEcho").textContent = "";
     $("#mktMaxPrice").value = ""; $("#mktMinMargin").value = "0";
     $("#mktMinVol").value = "0"; $("#mktReliability").value = "0";
     state.mktCapital = 0; state.mktSort = { key:"potential", dir:-1 };
@@ -2315,7 +2330,7 @@ const CREATION = [
   ["Naga's blessed crown",            25, {smithing:105},                           [["Naga's crown",1],["Sobek's charm",1]]],
   ["Grimwark's shield",               10, {smithing:105, crafting:105, defence:105},[["Grimwark's sigil",1],["Bulwark shield",1]]],
   ["Otherworldly dragonscale shield", 25, {smithing:112, crafting:110},             [["Otherworldly coreplate",1],["Dragonscale shield",1]]],
-  ["Otherworldly DS crossbow",        25, {smithing:115, crafting:115, archery:115},[["Otherworldly crossbow",1],["Dragon slayers crossbow",1],["Ancient crossbow string",1]]],
+  ["Otherworldly dragon slayer crossbow", 25, {smithing:115, crafting:115, archery:115},[["Otherworldly crossbow",1],["Dragon slayers crossbow",1],["Ancient crossbow string",1]]],
   ["Citadel helmet",                  25, {smithing:70, crafting:70},               [["Citadel helmet component",1],["Warrior's helmet",1]]],
   ["Citadel platelegs",               25, {smithing:70, crafting:70},               [["Citadel platelegs component",1],["Warrior's platelegs",1]]],
   ["Citadel platebody",               25, {smithing:70, crafting:70},               [["Citadel platebody component",1],["Warrior's platebody",1]]],
@@ -2337,15 +2352,33 @@ for (const [tier, lvl] of [["Silver",30], ["Gold",50], ["Diamond",75]]){
 }
 
 /* --------------------------------------------------------------------- */
+const norm = t => String(t || "").toLowerCase()
+  .replace(/['\u2019]/g, "")        // Naga's -> nagas
+  .replace(/[^a-z0-9]+/g, " ")      // underscores, hyphens, punctuation -> space
+  .trim();
+
 function buildCreation(){
   const m = state.market;
   if (!m) return;
 
   const nameById = new Map();
-  if (state.items) for (const it of state.items.values()) nameById.set(it.id, itemLabel(it.name));
+  const index = new Map();
+  if (state.items) for (const it of state.items.values()){
+    nameById.set(it.id, itemLabel(it.name));
+    const keys = [it.name, it.nameLocKey];
+    for (const k of keys){
+      const n = norm(k);
+      if (n && !index.has(n)) index.set(n, it);
+    }
+  }
   const idOf = nm => {
-    const it = state.items ? state.items.get(String(nm).toLowerCase()) : null;
+    const it = index.get(norm(nm));
     return it ? it.id : null;
+  };
+  const isLocKey = t => /^[a-z0-9_]+$/.test(String(t || ""));
+  const display = (id, curated) => {
+    const api = state.items ? [...state.items.values()].find(i => i.id === id) : null;
+    return (api && !isLocKey(api.name)) ? api.name : curated;
   };
 
   const priced = [], unknown = new Set();
@@ -2360,7 +2393,7 @@ function buildCreation(){
     for (const [nm, qty] of inputs){
       const id = idOf(nm);
       if (id == null){ unknown.add(nm); bad = true; break; }
-      parts.push({ id, qty, name: nameById.get(id) || nm });
+      parts.push({ id, qty, name: display(id, nm) });
     }
     if (bad) continue;
 
@@ -2389,7 +2422,7 @@ function buildCreation(){
       : (op.lowestSellPrice || 0) - 1);
 
     priced.push({
-      outId, outName: nameById.get(outId) || outName, secs, parts, fair, relPct,
+      outId, outName: display(outId, outName), secs, parts, fair, relPct,
       reqs: Object.entries(reqs).map(([skill, level]) => ({ skill, level })),
       cost, patientCost, instantPrice, patientPrice,
       instantRevenue: instantPrice * (1 - MKT.TAX),
