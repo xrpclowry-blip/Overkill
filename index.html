@@ -1911,6 +1911,15 @@ function median(nums){
   const m = v.length >> 1;
   return v.length % 2 ? v[m] : Math.round((v[m-1] + v[m]) / 2);
 }
+/* The API returns proper names for some items and raw loc keys for others. */
+function itemLabel(raw){
+  const t = String(raw || "");
+  if (!t) return "";
+  return /^[a-z0-9_'-]+$/.test(t)
+    ? t.replace(/_/g, " ").replace(/^./, c => c.toUpperCase())
+    : t;
+}
+
 function reliabilityWords(pct){
   if (pct >= 90) return "Trades every day";
   if (pct >= 50) return "Trades most days";
@@ -1957,7 +1966,7 @@ async function loadMarket(){
   const candidates = [], rejects = [];
   for (const p of (Array.isArray(live) ? live : [])){
     const meta = byId.get(p.itemId);
-    const name = meta ? meta.name : "item #" + p.itemId;
+    const name = itemLabel(meta ? meta.name : "") || ("item #" + p.itemId);
     const bid  = p.highestBuyPrice || 0;
     const ask  = p.lowestSellPrice || 0;
     const avg  = p.dailyAveragePrice || 0;
@@ -1971,12 +1980,15 @@ async function loadMarket(){
 
     if (!bid){ reject("Nobody is buying — no bid to sell into"); continue; }
     if (!ask){ reject("Nothing listed — no price to undercut");  continue; }
+    // Without a daily average there is nothing to anchor the asking price to,
+    // and an unanchored ask produces fantasy margins. Refuse to guess.
+    if (!avg){ reject("Didn't trade today — no price worth trusting"); continue; }
 
-    const capped = avg ? Math.round(avg * MKT.FAIR_HEADROOM) : ask - 1;
+    const capped = Math.round(avg * MKT.FAIR_HEADROOM);
     const buyAt  = bid + 1;
     const listAt = Math.min(ask - 1, capped);
 
-    if (avg && ask > avg * MKT.FANTASY && listAt <= buyAt){
+    if (ask > avg * MKT.FANTASY && listAt <= buyAt){
       reject(`Listed at ${abbr(ask)} but only worth about ${abbr(avg)}`); continue;
     }
     if (listAt <= buyAt){ reject("Buy and sell prices have converged"); continue; }
@@ -1986,14 +1998,14 @@ async function loadMarket(){
 
     candidates.push({ ...base, buyAt, listAt, profitPerUnit,
       marginPct: profitPerUnit / buyAt * 100,
-      flagged: avg ? ask > avg * MKT.FANTASY : false });
+      flagged: ask > avg * MKT.FANTASY });
   }
 
   /* ---- stage 2: verify the most promising with real trade history ---- */
   const ranked = [...candidates].sort((a,b) =>
-    (b.profitPerUnit * Math.max(b.bidDepth, b.askDepth)) -
-    (a.profitPerUnit * Math.max(a.bidDepth, a.askDepth)));
-  const check = ranked.slice(0, 45);
+    (b.profitPerUnit * Math.min(b.bidDepth, b.askDepth)) -
+    (a.profitPerUnit * Math.min(a.bidDepth, a.askDepth)));
+  const check = ranked.slice(0, 60);
 
   $("#mktLoadingText").textContent =
     `Screened ${candidates.length} candidates from ${live.length} items — checking trade history for the top ${check.length}…`;
@@ -2013,7 +2025,7 @@ async function loadMarket(){
     const med   = median(c.spark);
     if (med) c.fair = med;
     c.turnover  = c.volPerDay * c.fair;
-  }, 6);
+  }, 8);
 
   /* ---- apply the liquidity rules only where we actually know the volume ---- */
   const rows = [];
@@ -2041,11 +2053,11 @@ async function loadMarket(){
         rejects.push({ ...c, reason:"Too thin to take a position inside a day", apparent:c.marginPct }); continue;
       }
     } else {
-      // No history: size off visible order-book depth and say so rather than guess.
-      c.safeQty = Math.max(0, Math.min(c.bidDepth, c.askDepth));
-      if (c.safeQty < 1){
-        rejects.push({ ...c, reason:"No trade history and almost nothing queued", apparent:c.marginPct }); continue;
-      }
+      // Unverified means unknown liquidity, and unknown liquidity is exactly how
+      // you end up holding something forever. Never recommend it.
+      rejects.push({ ...c, reason:"Couldn't confirm it trades — not checked against history",
+                     apparent:c.marginPct });
+      continue;
     }
     rows.push(c);
   }
@@ -2330,7 +2342,7 @@ function buildCreation(){
   if (!m) return;
 
   const nameById = new Map();
-  if (state.items) for (const it of state.items.values()) nameById.set(it.id, it.name);
+  if (state.items) for (const it of state.items.values()) nameById.set(it.id, itemLabel(it.name));
   const idOf = nm => {
     const it = state.items ? state.items.get(String(nm).toLowerCase()) : null;
     return it ? it.id : null;
