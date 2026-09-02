@@ -1896,7 +1896,8 @@ const MKT = {
   SHARE: 0.10,          // never take more than this slice of a day's volume
   FAIR_HEADROOM: 1.05,  // don't plan to sell more than 5% above fair value
   FANTASY: 1.25,        // an ask this far above fair value isn't a real price
-  THIN: 0.34            // trades on fewer than a third of days = unreliable
+  THIN: 0.34,           // trades on fewer than a third of days = unreliable
+  VERIFY: 150           // how many candidates get a 30-day history call
 };
 
 Object.assign(state, {
@@ -1992,35 +1993,34 @@ async function loadMarket(){
 
     if (!bid){ reject("Nobody is buying — no bid to sell into"); continue; }
     if (!ask){ reject("Nothing listed — no price to undercut");  continue; }
-    // Without a daily average there is nothing to anchor the asking price to,
-    // and an unanchored ask produces fantasy margins. Refuse to guess.
-    if (!avg){ reject("Didn't trade today — no price worth trusting"); continue; }
 
-    const capped = Math.round(avg * MKT.FAIR_HEADROOM);
-    const buyAt  = bid + 1;
+    const buyAt = bid + 1;
+    if (ask - 1 <= buyAt){ reject("Buy and sell prices have converged"); continue; }
+
+    // Provisional only. The real listing price comes from 30-day history in
+    // stage 2 — a daily average of zero just means it hasn't traded today,
+    // which is not a reason to discard an item that trades most weeks.
+    const capped = avg ? Math.round(avg * MKT.FAIR_HEADROOM) : ask - 1;
     const listAt = Math.min(ask - 1, capped);
-
-    if (ask > avg * MKT.FANTASY && listAt <= buyAt){
-      reject(`Listed at ${abbr(ask)} but only worth about ${abbr(avg)}`); continue;
-    }
-    if (listAt <= buyAt){ reject("Buy and sell prices have converged"); continue; }
-
     const profitPerUnit = listAt * (1 - MKT.TAX) - buyAt;
-    if (profitPerUnit <= 0){ reject("Spread doesn't cover the 1% sell tax"); continue; }
 
     candidates.push({ ...base, buyAt, listAt, profitPerUnit,
-      marginPct: profitPerUnit / buyAt * 100,
-      flagged: ask > avg * MKT.FANTASY });
+      marginPct: buyAt ? profitPerUnit / buyAt * 100 : 0,
+      rawSpread: (ask - bid) / bid,
+      flagged: avg ? ask > avg * MKT.FANTASY : false });
   }
 
   /* ---- stage 2: verify the most promising with real trade history ---- */
-  const ranked = [...candidates].sort((a,b) =>
-    (b.profitPerUnit * Math.min(b.bidDepth, b.askDepth)) -
-    (a.profitPerUnit * Math.min(a.bidDepth, a.askDepth)));
-  const check = ranked.slice(0, 60);
+  // Prefer items that traded today (their price is anchored) and that have a
+  // sensible spread with depth behind it.
+  const score = c => (c.dailyAvg ? 2 : 1) *
+    Math.min(c.rawSpread, 1) * Math.log10(10 + Math.min(c.bidDepth, c.askDepth));
+  const ranked = [...candidates].sort((a,b) => score(b) - score(a));
+  const check = ranked.slice(0, MKT.VERIFY);
+  const skipped = ranked.slice(MKT.VERIFY);
 
   $("#mktLoadingText").textContent =
-    `Screened ${candidates.length} candidates from ${live.length} items — checking trade history for the top ${check.length}…`;
+    `Screened ${candidates.length} candidates from ${live.length} items — checking trade history for ${check.length}…`;
 
   await pooled(check, async c => {
     let rows = days.get(c.id);
@@ -2037,9 +2037,10 @@ async function loadMarket(){
     const med   = median(c.spark);
     if (med) c.fair = med;
     c.turnover  = c.volPerDay * c.fair;
-  }, 8);
+  }, 10);
 
   /* ---- apply the liquidity rules only where we actually know the volume ---- */
+  const skippedSet = new Set(skipped);
   const rows = [];
   for (const c of candidates){
     const verified = c.relPct != null;
@@ -2067,8 +2068,9 @@ async function loadMarket(){
     } else {
       // Unverified means unknown liquidity, and unknown liquidity is exactly how
       // you end up holding something forever. Never recommend it.
-      rejects.push({ ...c, reason:"Couldn't confirm it trades — not checked against history",
-                     apparent:c.marginPct });
+      rejects.push({ ...c, apparent:c.marginPct,
+        reason: skippedSet.has(c) ? `Not checked — outside the top ${MKT.VERIFY} candidates`
+                                  : "No trade history returned — can't confirm it sells" });
       continue;
     }
     rows.push(c);
@@ -2078,6 +2080,7 @@ async function loadMarket(){
   state.market = {
     rows, rejects, scanned:(live||[]).length, at:new Date(),
     verified: candidates.filter(c => c.relPct != null).length,
+    candidates: candidates.length,
     priceById: new Map((live||[]).map(p => [p.itemId, p])),
     statsById: new Map(rows.concat(rejects).map(r => [r.id, r]))
   };
@@ -2157,7 +2160,7 @@ function renderMarket(){
   ].join("");
 
   $("#mktCount").textContent =
-    `${rows.length} of ${m.rows.length} shown · ${m.verified} checked against 30 days of trade history · ` +
+    `${rows.length} of ${m.rows.length} shown · ${m.verified} of ${m.candidates} candidates checked against 30 days of trade history · ` +
     `positions capped at ${MKT.SHARE*100}% of a day's volume so both sides fill · ` +
     `prices read ${m.at.toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"})}`;
 
@@ -2381,18 +2384,34 @@ function buildCreation(){
     return (api && !isLocKey(api.name)) ? api.name : curated;
   };
 
-  const priced = [], unknown = new Set();
+  /* When a name doesn't resolve, suggest the closest real item names rather
+     than just reporting a miss — the game's spelling is usually one word off. */
+  const nearest = (target, n = 3) => {
+    const want = new Set(norm(target).split(" ").filter(Boolean));
+    const scored = [];
+    for (const [key, it] of index){
+      const have = new Set(key.split(" ").filter(Boolean));
+      let hit = 0;
+      for (const w of want) if (have.has(w)) hit++;
+      if (hit) scored.push([hit / Math.max(want.size, have.size), it.name]);
+    }
+    scored.sort((a,b) => b[0] - a[0]);
+    return [...new Set(scored.map(x => x[1]))].slice(0, n);
+  };
+
+  const priced = [], unknownMap = new Map();
+  const noteUnknown = nm => { if (!unknownMap.has(nm)) unknownMap.set(nm, nearest(nm)); };
   let unpriced = 0;
 
   for (const [outName, secs, reqs, inputs] of CREATION){
     const outId = idOf(outName);
-    if (outId == null){ unknown.add(outName); continue; }
+    if (outId == null){ noteUnknown(outName); continue; }
 
     const parts = [];
     let bad = false;
     for (const [nm, qty] of inputs){
       const id = idOf(nm);
-      if (id == null){ unknown.add(nm); bad = true; break; }
+      if (id == null){ noteUnknown(nm); bad = true; break; }
       parts.push({ id, qty, name: display(id, nm) });
     }
     if (bad) continue;
@@ -2434,7 +2453,7 @@ function buildCreation(){
     });
   }
 
-  state.craft = { priced, unknown:[...unknown], unpriced, total:CREATION.length };
+  state.craft = { priced, unknown:[...unknownMap.entries()], unpriced, total:CREATION.length };
 
   const sel = $("#craftWho");
   if (sel.options.length <= 1 && state.members.length){
@@ -2526,7 +2545,10 @@ function renderCreation(){
   if (c.unknown.length){
     miss.hidden = false;
     miss.innerHTML = `<strong>${c.unknown.length} item name${c.unknown.length===1?"":"s"} didn't match the game's item list</strong>,
-      so those recipes are skipped: <span class="dim">${c.unknown.map(esc).join(" · ")}</span>`;
+      so those recipes are skipped:<br>${c.unknown.map(([nm, near]) =>
+        `<span style="display:inline-block;margin:4px 12px 0 0">${esc(nm)}${
+          near.length ? ` <span class="dim">→ closest: ${near.map(esc).join(", ")}</span>`
+                      : ' <span class="dim">→ no similar item exists</span>'}</span>`).join("")}`;
   } else miss.hidden = true;
 
   if (!rows.length){
