@@ -1897,7 +1897,7 @@ const MKT = {
   FAIR_HEADROOM: 1.05,  // don't plan to sell more than 5% above fair value
   FANTASY: 1.25,        // an ask this far above fair value isn't a real price
   THIN: 0.34,           // trades on fewer than a third of days = unreliable
-  VERIFY: 250,          // how many candidates get a 30-day history call
+  VERIFY: 150,          // how many candidates get a 30-day history call
   FLOOR: 25000          // don't spend a call on an opportunity smaller than this
 };
 
@@ -2033,12 +2033,24 @@ async function loadMarket(){
   $("#mktLoadingText").textContent =
     `Screened ${candidates.length} candidates from ${live.length} items — checking trade history for ${check.length}…`;
 
+  /* Firing these ten-at-a-time got most of them refused, and a refused call is
+     indistinguishable from "this item has no history" unless we count them.
+     Go gentler, retry once, and keep score. */
+  const tally = { ok:0, empty:0, failed:0 };
   await pooled(check, async c => {
     let rows = days.get(c.id);
     if (!rows || !rows.length){
-      rows = await api(`/api/PlayerMarket/items/prices/history/${c.id}?period=30d`, { optional:true });
+      try {
+        rows = await api(`/api/PlayerMarket/items/prices/history/${c.id}?period=30d`);
+      } catch {
+        await new Promise(r => setTimeout(r, 500));
+        try {
+          rows = await api(`/api/PlayerMarket/items/prices/history/${c.id}?period=30d`);
+        } catch { tally.failed++; return; }
+      }
     }
-    if (!Array.isArray(rows) || !rows.length) return;
+    if (!Array.isArray(rows) || !rows.length){ tally.empty++; return; }
+    tally.ok++;
     rows.sort((a,b) => a.timestamp < b.timestamp ? -1 : 1);
     c.tracked   = rows.length;
     c.traded    = rows.filter(h => (h.tradeVolume||0) > 0).length;
@@ -2048,7 +2060,7 @@ async function loadMarket(){
     const med   = median(c.spark);
     if (med) c.fair = med;
     c.turnover  = c.volPerDay * c.fair;
-  }, 10);
+  }, 4);
 
   /* ---- apply the liquidity rules only where we actually know the volume ---- */
   const skippedSet = new Set(skipped);
@@ -2091,7 +2103,7 @@ async function loadMarket(){
   state.market = {
     rows, rejects, scanned:(live||[]).length, at:new Date(),
     verified: worth.filter(c => c.relPct != null).length,
-    candidates: worth.length,
+    candidates: worth.length, attempted: check.length, tally,
     priceById: new Map((live||[]).map(p => [p.itemId, p])),
     statsById: new Map(rows.concat(rejects).map(r => [r.id, r]))
   };
@@ -2170,9 +2182,13 @@ function renderMarket(){
     tile("Skipped", num(m.rejects.length), "shown below with reasons")
   ].join("");
 
+  const t = m.tally || { failed:0, empty:0 };
   $("#mktCount").textContent =
-    `${rows.length} of ${m.rows.length} shown · ${m.verified} of ${m.candidates} candidates checked against 30 days of trade history · ` +
-    `positions capped at ${MKT.SHARE*100}% of a day's volume so both sides fill · ` +
+    `${rows.length} of ${m.rows.length} shown · ${m.verified} of ${m.candidates} candidates verified ` +
+    `against 30 days of trade history` +
+    (t.failed ? ` · ${t.failed} history request${t.failed===1?"":"s"} were refused (likely rate limited)` : "") +
+    (t.empty ? ` · ${t.empty} had no history at all` : "") +
+    ` · positions capped at ${MKT.SHARE*100}% of a day's volume · ` +
     `prices read ${m.at.toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"})}`;
 
   renderRejects();
