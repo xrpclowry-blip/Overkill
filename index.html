@@ -1897,7 +1897,8 @@ const MKT = {
   FAIR_HEADROOM: 1.05,  // don't plan to sell more than 5% above fair value
   FANTASY: 1.25,        // an ask this far above fair value isn't a real price
   THIN: 0.34,           // trades on fewer than a third of days = unreliable
-  VERIFY: 150           // how many candidates get a 30-day history call
+  VERIFY: 250,          // how many candidates get a 30-day history call
+  FLOOR: 25000          // don't spend a call on an opportunity smaller than this
 };
 
 Object.assign(state, {
@@ -2011,11 +2012,21 @@ async function loadMarket(){
   }
 
   /* ---- stage 2: verify the most promising with real trade history ---- */
-  // Prefer items that traded today (their price is anchored) and that have a
-  // sensible spread with depth behind it.
-  const score = c => (c.dailyAvg ? 2 : 1) *
-    Math.min(c.rawSpread, 1) * Math.log10(10 + Math.min(c.bidDepth, c.askDepth));
-  const ranked = [...candidates].sort((a,b) => score(b) - score(a));
+  /* Rough gold on the table, used only to decide what deserves a history call.
+     The spread is capped at 30% so an unanchored asking price can't inflate it,
+     and depth is the binding side — an item with two units queued cannot carry
+     a position however wide its spread looks. */
+  const potential = c =>
+    c.bid * Math.min(c.rawSpread, 0.30) * Math.min(c.bidDepth, c.askDepth);
+
+  const worth = [], tooSmall = [];
+  for (const c of candidates) (potential(c) >= MKT.FLOOR ? worth : tooSmall).push(c);
+  for (const c of tooSmall){
+    rejects.push({ ...c, apparent:c.marginPct,
+      reason:`Too little on the table — about ${abbr(potential(c))} at best` });
+  }
+
+  const ranked = worth.sort((a,b) => potential(b) - potential(a));
   const check = ranked.slice(0, MKT.VERIFY);
   const skipped = ranked.slice(MKT.VERIFY);
 
@@ -2042,7 +2053,7 @@ async function loadMarket(){
   /* ---- apply the liquidity rules only where we actually know the volume ---- */
   const skippedSet = new Set(skipped);
   const rows = [];
-  for (const c of candidates){
+  for (const c of worth){
     const verified = c.relPct != null;
     if (verified){
       if (c.relPct < MKT.THIN * 100){
@@ -2079,8 +2090,8 @@ async function loadMarket(){
   rejects.sort((a,b) => b.apparent - a.apparent);
   state.market = {
     rows, rejects, scanned:(live||[]).length, at:new Date(),
-    verified: candidates.filter(c => c.relPct != null).length,
-    candidates: candidates.length,
+    verified: worth.filter(c => c.relPct != null).length,
+    candidates: worth.length,
     priceById: new Map((live||[]).map(p => [p.itemId, p])),
     statsById: new Map(rows.concat(rejects).map(r => [r.id, r]))
   };
