@@ -1080,6 +1080,11 @@ async function loadAll(){
 
   setStatus("live", `Updated ${state.loadedAt.toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"})}${state.route!=="direct" ? " · via "+state.route : ""}`);
   renderAll();
+
+  // Warm the Market tab in the background so opening it is instant. Two calls,
+  // and it deliberately does not start the per-item verification trickle —
+  // that waits until someone actually opens the tab.
+  if (typeof loadMarket === "function") setTimeout(() => loadMarket(), 1200);
 }
 
 async function loadLogs(){
@@ -1908,7 +1913,10 @@ const MKT = {
   THIN: 0.34,           // trades on fewer than a third of days = unreliable
   VERIFY_TOP: 12,       // best rows quietly verified after the table renders
   FLOOR: 25000,         // don't spend a call on an opportunity smaller than this
-  MIN_DEPTH: 5          // units queued each side to trust an unverified item
+  MIN_DEPTH: 5,         // units queued each side to trust an unverified item
+  BID_FLOOR: 0.5,       // a bid this far under fair value will never get filled
+  TRICKLE: 3,           // items verified at a time in the background
+  PAUSE: 1200           // ms between background batches, to stay polite
 };
 
 Object.assign(state, {
@@ -2056,7 +2064,7 @@ async function loadMarket(){
   $("#mktBody").hidden = false;
   renderMarket();
   if (typeof buildCreation === "function") buildCreation();
-  verifyTop();
+  if (state.marketOpened) verifyTrickle();
 }
 
 /** Fold 30 days of history into a candidate. */
@@ -2084,14 +2092,25 @@ async function verifyItem(c){
   return false;
 }
 
-/** Quietly verify the strongest rows once the table is already usable. */
-async function verifyTop(){
+/** Work through every candidate in small polite batches, refreshing as we go.
+    Runs only once the Market tab has been opened, so a visitor who never looks
+    at it never triggers the traffic. */
+async function verifyTrickle(){
   const m = state.market;
-  if (!m) return;
-  const pick = m.candidates.filter(c => c.relPct == null).slice(0, MKT.VERIFY_TOP);
-  let changed = false;
-  await pooled(pick, async c => { if (await verifyItem(c)) changed = true; }, 2);
-  if (changed && state.market === m){ classify(); renderMarket(); }
+  if (!m || m.trickling) return;
+  m.trickling = true;
+  while (state.market === m){
+    const pick = m.candidates.filter(c => c.relPct == null && !c.verifying)
+                             .slice(0, MKT.TRICKLE);
+    if (!pick.length) break;
+    let changed = false;
+    await pooled(pick, async c => { if (await verifyItem(c)) changed = true; }, MKT.TRICKLE);
+    if (state.market !== m) return;
+    if (changed){ classify(); renderMarket(); }
+    await new Promise(r => setTimeout(r, MKT.PAUSE));
+  }
+  m.trickling = false;
+  if (state.market === m){ classify(); renderMarket(); }
 }
 
 /* Sort candidates into shown rows and skipped ones. Re-runs whenever new
@@ -2118,12 +2137,22 @@ function classify(){
         rejects.push({ ...c, reason:`Listed at ${abbr(c.ask)} but only worth about ${abbr(c.fair)}`,
                        apparent:c.marginPct }); continue;
       }
+      if (c.buyAt < c.fair * MKT.BID_FLOOR){
+        rejects.push({ ...c, apparent:c.marginPct,
+          reason:`Best bid is only ${(c.buyAt / c.fair * 100).toFixed(0)}% of what it's worth — an offer there wouldn't fill` });
+        continue;
+      }
       c.safeQty = Math.floor(c.volPerDay * MKT.SHARE);
       if (c.safeQty < 1){
         rejects.push({ ...c, reason:"Too thin to take a position inside a day",
                        apparent:c.marginPct }); continue;
       }
     } else if (c.dailyAvg && Math.min(c.bidDepth, c.askDepth) >= MKT.MIN_DEPTH){
+      if (c.buyAt < c.fair * MKT.BID_FLOOR){
+        rejects.push({ ...c, apparent:c.marginPct,
+          reason:`Best bid is only ${(c.buyAt / c.fair * 100).toFixed(0)}% of what it's worth — an offer there wouldn't fill` });
+        continue;
+      }
       // Weaker than 30 days of volume but still real: it changed hands today and
       // there is depth queued both sides. Size off the book, label it unverified.
       c.safeQty = Math.min(c.bidDepth, c.askDepth);
@@ -2213,7 +2242,7 @@ function renderMarket(){
 
   $("#mktCount").textContent =
     `${rows.length} of ${m.rows.length} shown · ${m.verified} of ${m.candidates.length} verified ` +
-    `against 30 days of history (open a row to verify it) · ` +
+    `against 30 days of history${m.trickling ? ", still checking…" : ""} · ` +
     `prices read ${m.at.toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"})}`;
 
   renderRejects();
@@ -2340,7 +2369,10 @@ async function showMarketItem(id, quiet){
 /* --------------------------------------------------------------------- */
 function initMarket(){
   $$("nav.tabs button").forEach(b => b.addEventListener("click", () => {
-    if (b.dataset.view === "market") loadMarket();
+    if (b.dataset.view !== "market") return;
+    state.marketOpened = true;
+    loadMarket().then(() => verifyTrickle());
+    if (state.market) verifyTrickle();
   }));
   const redraw = () => { if (state.market) renderMarket(); };
   ["#mktSearch","#mktMaxPrice","#mktMinMargin","#mktMinVol","#mktReliability"]
