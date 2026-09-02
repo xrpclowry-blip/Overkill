@@ -466,6 +466,8 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
             <input type="checkbox" id="craftAffordable"> Only what I can afford</label>
           <span class="dim" id="craftCount" style="font-size:12.5px"></span>
         </div>
+        <p class="hint banner warn" id="craftMissing" hidden
+           style="display:block;margin:0 0 12px;font-size:12.5px"></p>
         <div class="tbl-scroll"><table id="craftTable"></table></div>
       </div>
 
@@ -1928,12 +1930,12 @@ async function loadMarket(){
   $("#mktBody").hidden = true;
   $("#mktError").hidden = true;
 
-  let live, hist;
+  let live, bulkHist;
   try {
-    [live, hist] = await Promise.all([
-      api("/api/PlayerMarket/items/prices/latest?includeAveragePrice=true"),
-      api("/api/PlayerMarket/items/prices/history?period=30d")
-    ]);
+    live = await api("/api/PlayerMarket/items/prices/latest?includeAveragePrice=true");
+    // Free head start: this covers only a slice of the catalogue, so it is an
+    // optimisation, never a requirement. Items missing from it get their own call.
+    bulkHist = await api("/api/PlayerMarket/items/prices/history?period=30d", { optional:true });
   } catch (e){
     state.marketLoading = false;
     $("#mktLoading").hidden = true;
@@ -1945,75 +1947,113 @@ async function loadMarket(){
   const byId = new Map();
   (state.items ? [...state.items.values()] : []).forEach(i => byId.set(i.id, i));
 
-  // Group history rows per item.
   const days = new Map();
-  for (const r of (Array.isArray(hist) ? hist : [])){
+  for (const r of (Array.isArray(bulkHist) ? bulkHist : [])){
     if (!days.has(r.itemId)) days.set(r.itemId, []);
     days.get(r.itemId).push(r);
   }
-  for (const rows of days.values()) rows.sort((a,b) => a.timestamp < b.timestamp ? -1 : 1);
 
-  const rows = [], rejects = [];
-
+  /* ---- stage 1: screen on live prices alone ---- */
+  const candidates = [], rejects = [];
   for (const p of (Array.isArray(live) ? live : [])){
     const meta = byId.get(p.itemId);
     const name = meta ? meta.name : "item #" + p.itemId;
-    const hist = days.get(p.itemId) || [];
-
-    const tracked   = hist.length;
-    const traded    = hist.filter(h => (h.tradeVolume||0) > 0).length;
-    const relPct    = tracked ? Math.round(traded / tracked * 100) : 0;
-    const totalVol  = hist.reduce((s,h) => s + (h.tradeVolume||0), 0);
-    const volPerDay = tracked ? totalVol / tracked : 0;
-    const fair      = median(hist.map(h => h.averagePrice)) || p.dailyAveragePrice || 0;
-
-    const bid = p.highestBuyPrice || 0;
-    const ask = p.lowestSellPrice || 0;
-    const spark = hist.map(h => h.averagePrice || 0);
+    const bid  = p.highestBuyPrice || 0;
+    const ask  = p.lowestSellPrice || 0;
+    const avg  = p.dailyAveragePrice || 0;
 
     const base = {
-      id:p.itemId, name, bid, ask, fair, relPct, tracked, traded,
-      volPerDay, turnover: volPerDay * (fair || p.dailyAveragePrice || 0),
-      bidDepth: p.highestPriceVolume || 0, askDepth: p.lowestPriceVolume || 0,
-      spark, dailyAvg: p.dailyAveragePrice || 0
+      id:p.itemId, name, bid, ask, dailyAvg:avg, fair:avg,
+      bidDepth:p.highestPriceVolume || 0, askDepth:p.lowestPriceVolume || 0,
+      relPct:null, tracked:0, traded:0, volPerDay:null, turnover:0, spark:[]
     };
+    const reject = r => rejects.push({ ...base, reason:r, apparent: bid > 0 ? (ask-bid)/bid*100 : 0 });
 
-    const reject = r => { rejects.push({ ...base, reason:r, apparent: bid > 0 ? (ask-bid)/bid*100 : 0 }); };
+    if (!bid){ reject("Nobody is buying — no bid to sell into"); continue; }
+    if (!ask){ reject("Nothing listed — no price to undercut");  continue; }
 
-    if (!bid)                       { reject("Nobody is buying — no bid to sell into"); continue; }
-    if (!ask)                       { reject("Nothing listed — no price to undercut");  continue; }
-    if (!tracked)                   { reject("No trade history available");             continue; }
-    if (relPct < MKT.THIN * 100)    { reject(`Only trades ${traded} of the last ${tracked} days`); continue; }
-    if (volPerDay < 1)              { reject("Almost no volume — you'd be the market");  continue; }
-
-    // The realistic exit: never plan to sell above where it actually trades.
-    const capped = fair ? Math.round(fair * MKT.FAIR_HEADROOM) : ask - 1;
+    const capped = avg ? Math.round(avg * MKT.FAIR_HEADROOM) : ask - 1;
     const buyAt  = bid + 1;
     const listAt = Math.min(ask - 1, capped);
 
-    if (fair && ask > fair * MKT.FANTASY && listAt <= buyAt){
-      reject(`Listed at ${abbr(ask)} but only worth about ${abbr(fair)}`); continue;
+    if (avg && ask > avg * MKT.FANTASY && listAt <= buyAt){
+      reject(`Listed at ${abbr(ask)} but only worth about ${abbr(avg)}`); continue;
     }
-    if (listAt <= buyAt)            { reject("Buy and sell prices have converged"); continue; }
+    if (listAt <= buyAt){ reject("Buy and sell prices have converged"); continue; }
 
     const profitPerUnit = listAt * (1 - MKT.TAX) - buyAt;
-    if (profitPerUnit <= 0)         { reject("Spread doesn't cover the 1% sell tax"); continue; }
+    if (profitPerUnit <= 0){ reject("Spread doesn't cover the 1% sell tax"); continue; }
 
-    const safeQty = Math.floor(volPerDay * MKT.SHARE);
-    if (safeQty < 1)                { reject("Too thin to take a position inside a day"); continue; }
-
-    rows.push({
-      ...base, buyAt, listAt, profitPerUnit,
+    candidates.push({ ...base, buyAt, listAt, profitPerUnit,
       marginPct: profitPerUnit / buyAt * 100,
-      safeQty,
-      flagged: fair ? ask > fair * MKT.FANTASY : false
-    });
+      flagged: avg ? ask > avg * MKT.FANTASY : false });
+  }
+
+  /* ---- stage 2: verify the most promising with real trade history ---- */
+  const ranked = [...candidates].sort((a,b) =>
+    (b.profitPerUnit * Math.max(b.bidDepth, b.askDepth)) -
+    (a.profitPerUnit * Math.max(a.bidDepth, a.askDepth)));
+  const check = ranked.slice(0, 45);
+
+  $("#mktLoadingText").textContent =
+    `Screened ${candidates.length} candidates from ${live.length} items — checking trade history for the top ${check.length}…`;
+
+  await pooled(check, async c => {
+    let rows = days.get(c.id);
+    if (!rows || !rows.length){
+      rows = await api(`/api/PlayerMarket/items/prices/history/${c.id}?period=30d`, { optional:true });
+    }
+    if (!Array.isArray(rows) || !rows.length) return;
+    rows.sort((a,b) => a.timestamp < b.timestamp ? -1 : 1);
+    c.tracked   = rows.length;
+    c.traded    = rows.filter(h => (h.tradeVolume||0) > 0).length;
+    c.relPct    = Math.round(c.traded / c.tracked * 100);
+    c.volPerDay = rows.reduce((s,h) => s + (h.tradeVolume||0), 0) / c.tracked;
+    c.spark     = rows.map(h => h.averagePrice || 0);
+    const med   = median(c.spark);
+    if (med) c.fair = med;
+    c.turnover  = c.volPerDay * c.fair;
+  }, 6);
+
+  /* ---- apply the liquidity rules only where we actually know the volume ---- */
+  const rows = [];
+  for (const c of candidates){
+    const verified = c.relPct != null;
+    if (verified){
+      if (c.relPct < MKT.THIN * 100){
+        rejects.push({ ...c, reason:`Only trades ${c.traded} of the last ${c.tracked} days`,
+                       apparent:c.marginPct }); continue;
+      }
+      if (c.volPerDay < 1){
+        rejects.push({ ...c, reason:"Almost no volume — you'd be the market", apparent:c.marginPct }); continue;
+      }
+      // A better fair value can move the sensible listing price.
+      const capped = Math.round(c.fair * MKT.FAIR_HEADROOM);
+      c.listAt = Math.min(c.ask - 1, capped);
+      c.profitPerUnit = c.listAt * (1 - MKT.TAX) - c.buyAt;
+      c.marginPct = c.profitPerUnit / c.buyAt * 100;
+      if (c.profitPerUnit <= 0){
+        rejects.push({ ...c, reason:`Listed at ${abbr(c.ask)} but only worth about ${abbr(c.fair)}`,
+                       apparent:c.marginPct }); continue;
+      }
+      c.safeQty = Math.floor(c.volPerDay * MKT.SHARE);
+      if (c.safeQty < 1){
+        rejects.push({ ...c, reason:"Too thin to take a position inside a day", apparent:c.marginPct }); continue;
+      }
+    } else {
+      // No history: size off visible order-book depth and say so rather than guess.
+      c.safeQty = Math.max(0, Math.min(c.bidDepth, c.askDepth));
+      if (c.safeQty < 1){
+        rejects.push({ ...c, reason:"No trade history and almost nothing queued", apparent:c.marginPct }); continue;
+      }
+    }
+    rows.push(c);
   }
 
   rejects.sort((a,b) => b.apparent - a.apparent);
-  // Keep the raw feeds around — item creation needs prices and depth per item.
   state.market = {
-    rows, rejects, scanned: (live||[]).length, at:new Date(),
+    rows, rejects, scanned:(live||[]).length, at:new Date(),
+    verified: candidates.filter(c => c.relPct != null).length,
     priceById: new Map((live||[]).map(p => [p.itemId, p])),
     statsById: new Map(rows.concat(rejects).map(r => [r.id, r]))
   };
@@ -2093,13 +2133,17 @@ function renderMarket(){
   ].join("");
 
   $("#mktCount").textContent =
-    `${rows.length} of ${m.rows.length} opportunities shown · positions capped at ${MKT.SHARE*100}% of a day's volume so both sides fill · prices read ${m.at.toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"})}`;
+    `${rows.length} of ${m.rows.length} shown · ${m.verified} checked against 30 days of trade history · ` +
+    `positions capped at ${MKT.SHARE*100}% of a day's volume so both sides fill · ` +
+    `prices read ${m.at.toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"})}`;
+
+  renderRejects();
 
   if (!rows.length){
     $("#mktTable").innerHTML = "";
     $("#mktCount").textContent = m.rows.length
       ? "Nothing matches those filters. Loosen them, or check the skipped list below."
-      : "Nothing is worth trading right now — the spreads are too thin today. Worth checking again later.";
+      : "Nothing cleared every check right now. The skipped list below says why for each item.";
     return;
   }
 
@@ -2117,20 +2161,32 @@ function renderMarket(){
   });
   $$("#mktTable tbody tr").forEach(tr => tr.onclick = () => showMarketItem(+tr.dataset.id));
 
-  $("#mktRejects").innerHTML =
-    `<thead><tr><th>Item</th><th>Bid</th><th>Listed at</th><th>Actually worth</th><th>Why it's skipped</th></tr></thead>
-     <tbody>${m.rejects.slice(0,25).map(r => `<tr>
-       <td>${esc(r.name)}</td>
-       <td>${r.bid ? num(r.bid) : '<span class="dim">none</span>'}</td>
-       <td>${r.ask ? num(r.ask) : '<span class="dim">none</span>'}</td>
-       <td>${r.fair ? num(r.fair) : '<span class="dim">unknown</span>'}</td>
-       <td class="dim" style="text-align:left">${esc(r.reason)}</td>
-     </tr>`).join("")}</tbody>`;
-
   if (state.mktPick != null) showMarketItem(state.mktPick, true);
 }
 
 /* --------------------------------------------------------------------- */
+function renderRejects(){
+  const m = state.market;
+  if (!m) return;
+  // Group by reason first — one line per reason is far more useful than 25 rows
+  // that all say the same thing.
+  const byReason = new Map();
+  for (const r of m.rejects){
+    if (!byReason.has(r.reason)) byReason.set(r.reason, []);
+    byReason.get(r.reason).push(r);
+  }
+  const groups = [...byReason.entries()].sort((a,b) => b[1].length - a[1].length);
+
+  $("#mktRejects").innerHTML =
+    `<thead><tr><th>Reason</th><th>Items</th><th>Examples</th></tr></thead>
+     <tbody>${groups.map(([reason, list]) => `<tr>
+       <td style="white-space:normal">${esc(reason)}</td>
+       <td>${num(list.length)}</td>
+       <td class="dim" style="text-align:left;white-space:normal">${
+         list.slice(0,4).map(r => esc(r.name)).join(", ")}${list.length > 4 ? " …" : ""}</td>
+     </tr>`).join("")}</tbody>`;
+}
+
 function sparkline(values){
   const v = values.filter(x => Number.isFinite(x));
   if (v.length < 2) return "";
@@ -2419,11 +2475,14 @@ function renderCreation(){
     ? "Buy the parts at their asking price, combine, and sell straight into the standing buy offer. Instant both ways."
     : "Queue buy offers for the parts, combine, then list the result near what it actually trades for. Better margin, but you wait for fills.";
 
-  const missing = c.unknown.length
-    ? ` · ${c.unknown.length} item name${c.unknown.length===1?"":"s"} not found in the game data`
-    : "";
   $("#craftCount").textContent =
-    `${rows.length} worth doing of ${c.priced.length} priced · ${c.total} instant recipes known${missing}`;
+    `${rows.length} worth doing of ${c.priced.length} priced · ${c.total} instant recipes known`;
+  const miss = $("#craftMissing");
+  if (c.unknown.length){
+    miss.hidden = false;
+    miss.innerHTML = `<strong>${c.unknown.length} item name${c.unknown.length===1?"":"s"} didn't match the game's item list</strong>,
+      so those recipes are skipped: <span class="dim">${c.unknown.map(esc).join(" · ")}</span>`;
+  } else miss.hidden = true;
 
   if (!rows.length){
     const other = craftRowsOther(instant ? "patient" : "instant");
