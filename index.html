@@ -1,0 +1,1794 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overkill — Clan Dashboard</title>
+<style>
+:root{
+  color-scheme: dark;
+  --surface-0:#111110;
+  --surface-1:#1a1a19;
+  --surface-2:#232320;
+  --surface-3:#2c2c28;
+  --line:#38383300;
+  --border:#343430;
+  --border-soft:#2a2a26;
+  --text-primary:#ffffff;
+  --text-secondary:#c3c2b7;
+  --text-muted:#8a8980;
+  --series-1:#3987e5;
+  --series-2:#e66767;
+  --series-3:#199e70;
+  --accent:#3987e5;
+  --good:#199e70;
+  --warn:#c98500;
+  --bad:#e66767;
+  --radius:10px;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--surface-0);
+  color:var(--text-primary);
+  font-family:var(--sans);
+  font-size:14px;
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--accent)}
+.wrap{max-width:1280px;margin:0 auto;padding:0 20px 64px}
+header.top .wrap{padding-bottom:0}
+
+/* ---------- header ---------- */
+header.top{
+  border-bottom:1px solid var(--border);
+  background:linear-gradient(180deg,#1d1d1b 0%,var(--surface-0) 100%);
+  padding:22px 0 0;
+}
+.brand{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.crest{
+  width:44px;height:44px;border-radius:12px;flex:0 0 auto;
+  background:linear-gradient(140deg,var(--series-1),#1c5cab);
+  display:grid;place-items:center;font-weight:800;font-size:13px;letter-spacing:.5px;
+  color:#fff;box-shadow:0 0 0 1px #ffffff14 inset;
+}
+h1{font-size:22px;margin:0;letter-spacing:-.01em;font-weight:700}
+.sub{color:var(--text-muted);font-size:12.5px;margin-top:1px}
+.spacer{flex:1 1 auto}
+.status{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-muted)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--text-muted)}
+.dot.live{background:var(--good);box-shadow:0 0 0 3px #199e7033}
+.dot.err{background:var(--bad);box-shadow:0 0 0 3px #e6676733}
+.dot.load{background:var(--warn);animation:pulse 1.1s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+button.ghost{
+  background:var(--surface-2);color:var(--text-secondary);border:1px solid var(--border);
+  border-radius:8px;padding:6px 11px;font-size:12.5px;cursor:pointer;font-family:inherit;
+}
+button.ghost:hover{background:var(--surface-3);color:var(--text-primary)}
+
+/* ---------- tabs ---------- */
+nav.tabs{display:flex;gap:2px;margin-top:18px;overflow-x:auto;scrollbar-width:none}
+nav.tabs::-webkit-scrollbar{display:none}
+nav.tabs button{
+  background:none;border:none;border-bottom:2px solid transparent;
+  color:var(--text-muted);padding:10px 14px;font-size:13.5px;cursor:pointer;
+  font-family:inherit;white-space:nowrap;font-weight:500;
+}
+nav.tabs button:hover{color:var(--text-secondary)}
+nav.tabs button[aria-selected="true"]{color:var(--text-primary);border-bottom-color:var(--accent)}
+
+/* ---------- panels ---------- */
+.panel{
+  background:var(--surface-1);border:1px solid var(--border-soft);
+  border-radius:var(--radius);padding:16px 18px;
+}
+.panel h2{
+  font-size:12px;text-transform:uppercase;letter-spacing:.07em;
+  color:var(--text-muted);margin:0 0 2px;font-weight:600;
+}
+.panel .hint{font-size:12px;color:var(--text-muted);margin:0 0 14px}
+.grid{display:grid;gap:14px;align-items:start}
+section.view{padding-top:22px}
+section.view[hidden]{display:none}
+
+/* ---------- stat tiles ---------- */
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:12px;margin-bottom:16px}
+.tile{background:var(--surface-1);border:1px solid var(--border-soft);border-radius:var(--radius);padding:14px 16px}
+.tile .k{font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);font-weight:600}
+.tile .v{font-size:24px;font-weight:700;letter-spacing:-.02em;margin-top:5px;font-variant-numeric:tabular-nums}
+.tile .m{font-size:12px;color:var(--text-muted);margin-top:3px}
+.tile .v.sm{font-size:19px}
+
+/* ---------- tables ---------- */
+.tbl-scroll{overflow-x:auto;margin:0 -18px;padding:0 18px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:8px 10px;text-align:right;white-space:nowrap}
+th:first-child,td:first-child{text-align:left;padding-left:2px}
+thead th{
+  color:var(--text-muted);font-weight:600;font-size:11.5px;text-transform:uppercase;
+  letter-spacing:.05em;border-bottom:1px solid var(--border);cursor:pointer;user-select:none;
+  position:sticky;top:0;background:var(--surface-1);
+}
+thead th:hover{color:var(--text-secondary)}
+thead th .ar{opacity:.45;font-size:9px;margin-left:3px}
+tbody tr{border-bottom:1px solid var(--border-soft)}
+tbody tr:hover{background:#ffffff07}
+tbody td{font-variant-numeric:tabular-nums;color:var(--text-secondary)}
+tbody td:first-child{color:var(--text-primary);font-weight:500}
+.name-cell{display:flex;align-items:center;gap:8px}
+.pill{
+  font-size:10px;padding:1.5px 6px;border-radius:999px;font-weight:600;
+  letter-spacing:.03em;border:1px solid transparent;
+}
+.pill.leader{background:#c9850022;color:#e0a52e;border-color:#c9850055}
+.pill.deputy{background:#3987e522;color:#79b3f2;border-color:#3987e555}
+.pill.on{background:#199e7022;color:#3fc294;border-color:#199e7055}
+.pill.off{background:#ffffff0d;color:var(--text-muted);border-color:var(--border)}
+.pos{color:#3fc294}
+.neg{color:#f08a8a}
+.dim{color:var(--text-muted)}
+
+/* ---------- bars ---------- */
+.barrow{display:grid;grid-template-columns:150px 1fr auto;gap:12px;align-items:center;padding:5px 0}
+.barrow .lbl{font-size:12.5px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.barrow .track{background:#ffffff0a;border-radius:4px;height:14px;position:relative;overflow:hidden}
+.barrow .fill{height:100%;border-radius:0 4px 4px 0;background:var(--series-1)}
+.barrow .val{font-size:12px;color:var(--text-secondary);font-variant-numeric:tabular-nums;min-width:78px;text-align:right}
+
+/* ---------- charts ---------- */
+.chart{position:relative;width:100%}
+.chart svg{display:block;width:100%;height:auto;overflow:visible}
+.gridline{stroke:#ffffff12;stroke-width:1}
+.axis-txt{fill:var(--text-muted);font-size:10.5px;font-family:var(--sans)}
+.tip{
+  position:fixed;pointer-events:none;background:var(--surface-3);
+  border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:12px;
+  color:var(--text-primary);box-shadow:0 8px 24px #0009;opacity:0;transition:opacity .1s;
+  z-index:20;white-space:nowrap;
+}
+.tip.on{opacity:1}
+.tip .tk{color:var(--text-muted);font-size:11px}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--text-secondary);margin-bottom:10px}
+.legend i{width:10px;height:10px;border-radius:3px;display:inline-block;margin-right:6px;vertical-align:-1px}
+
+/* ---------- controls ---------- */
+.controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+select,input[type="search"]{
+  background:var(--surface-2);color:var(--text-primary);border:1px solid var(--border);
+  border-radius:8px;padding:6px 10px;font-size:12.5px;font-family:inherit;
+}
+input[type="search"]{min-width:180px}
+.seg{display:inline-flex;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;padding:2px}
+.seg button{
+  background:none;border:none;color:var(--text-muted);padding:4px 11px;font-size:12.5px;
+  border-radius:6px;cursor:pointer;font-family:inherit;
+}
+.seg button[aria-pressed="true"]{background:var(--surface-3);color:var(--text-primary)}
+
+/* ---------- misc ---------- */
+.skillgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:6px}
+.sk{background:var(--surface-2);border:1px solid var(--border-soft);border-radius:8px;padding:7px 9px}
+.sk .n{font-size:11px;color:var(--text-muted)}
+.sk .l{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}
+.sk .x{font-size:10.5px;color:var(--text-muted);font-variant-numeric:tabular-nums}
+/* rank badges + trophies */
+.rk{
+  display:inline-block;min-width:34px;text-align:center;font-variant-numeric:tabular-nums;
+  font-weight:700;font-size:12px;padding:2px 7px;border-radius:6px;
+  background:#ffffff0d;color:var(--text-secondary);border:1px solid var(--border);
+}
+.rk.g1{background:#c9850026;color:#e8b74a;border-color:#c9850066}
+.rk.g2{background:#3987e526;color:#8fbdf5;border-color:#3987e566}
+.rk.g3{background:#199e7026;color:#48c79a;border-color:#199e7066}
+.trophies{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+.trophy{
+  background:linear-gradient(140deg,#c9850022,var(--surface-1));border:1px solid #c9850055;
+  border-radius:var(--radius);padding:11px 15px;min-width:150px;
+}
+.trophy .p{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#e8b74a;font-weight:700}
+.trophy .o{font-size:15px;font-weight:600;margin-top:3px}
+.trophy .s{font-size:11.5px;color:var(--text-muted);margin-top:2px}
+.trophy.blue{background:linear-gradient(140deg,#3987e522,var(--surface-1));border-color:#3987e555}
+.trophy.blue .p{color:#8fbdf5}
+.chips{display:flex;gap:7px;flex-wrap:wrap}
+.chip{
+  background:var(--surface-2);border:1px solid var(--border);border-radius:999px;
+  padding:4px 11px;font-size:12.5px;color:var(--text-secondary);
+  display:inline-flex;align-items:center;gap:7px;
+}
+.chip b{color:var(--text-primary);font-weight:600}
+.chip .x{color:var(--text-muted);cursor:pointer;font-size:14px;line-height:1}
+.chip .x:hover{color:var(--bad)}
+.chip .live-dot{width:7px;height:7px;border-radius:50%;background:var(--good);flex:0 0 auto}
+.feed{max-height:600px;overflow-y:auto;margin:0 -6px;padding:0 6px}
+.ev{display:grid;grid-template-columns:auto 1fr auto;gap:10px;padding:7px 0;border-bottom:1px solid var(--border-soft);font-size:12.5px;align-items:baseline}
+.ev .t{color:var(--text-muted);font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.ev .m{color:var(--text-secondary)}
+.banner{
+  border-radius:var(--radius);padding:11px 14px;font-size:13px;margin:16px 0 0;
+  border:1px solid;display:flex;gap:10px;align-items:flex-start;
+}
+.banner.err{background:#e6676714;border-color:#e6676744;color:#f3a9a9}
+.banner.warn{background:#c9850014;border-color:#c9850044;color:#e0b45e}
+.empty{color:var(--text-muted);font-size:13px;padding:26px 0;text-align:center}
+.skel{background:linear-gradient(90deg,#ffffff08,#ffffff14,#ffffff08);background-size:200% 100%;animation:sh 1.3s linear infinite;border-radius:6px;height:12px}
+@keyframes sh{0%{background-position:200% 0}100%{background-position:-200% 0}}
+footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px solid var(--border-soft);margin-top:34px}
+@media(max-width:560px){
+  .chart{overflow-x:auto}
+  .chart svg{min-width:520px}
+}
+@media(max-width:640px){
+  .barrow{grid-template-columns:110px 1fr auto}
+  h1{font-size:19px}
+  .tile .v{font-size:20px}
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <div class="brand">
+      <div class="crest" id="crest">OVK</div>
+      <div>
+        <h1 id="clanTitle">Overkill</h1>
+        <div class="sub" id="clanSub">Idle Clans · loading clan record…</div>
+      </div>
+      <div class="spacer"></div>
+      <div class="status">
+        <span class="dot load" id="statusDot"></span>
+        <span id="statusText">Loading…</span>
+        <button class="ghost" id="refreshBtn">Refresh</button>
+      </div>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-view="overview" aria-selected="true">Overview</button>
+      <button role="tab" data-view="roster" aria-selected="false">Member roll</button>
+      <button role="tab" data-view="race" aria-selected="false">XP race</button>
+      <button role="tab" data-view="cup" aria-selected="false">Clan Cup</button>
+      <button role="tab" data-view="ranks" aria-selected="false">Rankings</button>
+      <button role="tab" data-view="vault" aria-selected="false">Vault</button>
+      <button role="tab" data-view="trends" aria-selected="false" id="tabTrends" hidden>Trends</button>
+      <button role="tab" data-view="activity" aria-selected="false">Activity log</button>
+    </nav>
+  </div>
+</header>
+
+<div class="wrap">
+  <div id="banners"></div>
+
+  <!-- OVERVIEW -->
+  <section class="view" id="view-overview">
+    <div class="panel" id="presencePanel" style="margin-bottom:14px" hidden>
+      <h2>Online now</h2>
+      <p class="hint" id="presenceHint"></p>
+      <div id="presenceList"></div>
+    </div>
+    <div id="ovTrophies"></div>
+    <div class="tiles" id="ovTiles"></div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(340px,1fr))">
+      <div class="panel">
+        <h2>Clan experience</h2>
+        <p class="hint" id="tlHint">Experience earned by the whole clan, sampled through the week.</p>
+        <div class="controls" style="margin-bottom:10px">
+          <div class="seg" id="tlMode">
+            <button data-m="raw"  aria-pressed="true">Per snapshot</button>
+            <button data-m="rate" aria-pressed="false">Per hour</button>
+          </div>
+        </div>
+        <div class="chart" id="chartTimeline"></div>
+      </div>
+      <div class="panel">
+        <h2>Top contributors — last 7 days</h2>
+        <p class="hint">Experience each member earned in the period.</p>
+        <div id="ovTop"></div>
+      </div>
+    </div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(340px,1fr));margin-top:14px">
+      <div class="panel">
+        <h2>Where the clan's experience lives</h2>
+        <p class="hint">All-time clan experience by skill.</p>
+        <div id="ovSkills"></div>
+      </div>
+      <div class="panel">
+        <h2>Roster health</h2>
+        <p class="hint">Members ordered by how long they have been offline.</p>
+        <div id="ovHealth"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ROSTER -->
+  <section class="view" id="view-roster" hidden>
+    <div class="controls">
+      <input type="search" id="rosterSearch" placeholder="Filter members…">
+      <span class="dim" style="font-size:12.5px">Add skill column</span>
+      <select id="rosterSkill"></select>
+      <span class="dim" id="rosterCount" style="font-size:12.5px"></span>
+    </div>
+    <div class="panel">
+      <div class="tbl-scroll"><table id="rosterTable"></table></div>
+    </div>
+    <div class="panel" style="margin-top:14px" id="memberPanel" hidden>
+      <h2 id="memberName">Member</h2>
+      <p class="hint" id="memberMeta"></p>
+      <div class="chart" id="memberChart" style="margin-bottom:16px"></div>
+      <div class="skillgrid" id="memberSkills"></div>
+    </div>
+  </section>
+
+  <!-- XP RACE -->
+  <section class="view" id="view-race" hidden>
+    <div class="controls">
+      <div class="seg" id="raceRange">
+        <button data-h="24" aria-pressed="false">24 hours</button>
+        <button data-h="168" aria-pressed="true">7 days</button>
+      </div>
+      <select id="raceSkill"></select>
+    </div>
+    <div class="tiles" id="raceTiles"></div>
+    <div class="panel">
+      <h2 id="raceTitle">Experience gained</h2>
+      <p class="hint" id="raceHint"></p>
+      <div id="raceBars"></div>
+    </div>
+    <div class="panel" style="margin-top:14px">
+      <h2>Clan totals by skill</h2>
+      <p class="hint">Experience the clan earned in the selected window, by skill.</p>
+      <div id="raceSkillBars"></div>
+    </div>
+  </section>
+
+  <!-- CLAN CUP -->
+  <section class="view" id="view-cup" hidden>
+    <div class="tiles" id="cupTiles"></div>
+    <div class="panel">
+      <h2>Podium</h2>
+      <p class="hint">Objectives where Overkill sits in the world top 25.</p>
+      <div id="cupPodium"></div>
+    </div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(360px,1fr));margin-top:14px">
+      <div class="panel">
+        <h2>Scored objectives</h2>
+        <p class="hint">Experience and kill counts. Click a column to re-sort.</p>
+        <div class="tbl-scroll"><table id="cupScoreTable"></table></div>
+      </div>
+      <div class="panel">
+        <h2>Speed runs</h2>
+        <p class="hint">Fastest clear the clan has recorded this cup.</p>
+        <div class="tbl-scroll"><table id="cupTimeTable"></table></div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:14px">
+      <h2>Biggest opportunities</h2>
+      <p class="hint">Where the clan ranks worst — the cheapest places to climb.</p>
+      <div id="cupWeak"></div>
+    </div>
+  </section>
+
+  <!-- RANKINGS -->
+  <section class="view" id="view-ranks" hidden>
+    <div class="tiles" id="rankTiles"></div>
+    <div class="banner warn" style="margin:0 0 16px">
+      <div>These rankings measure <strong>experience earned in a rolling window</strong> — they move hour to hour
+      and are not the clan rank the game shows you. The public API doesn't expose that one.</div>
+    </div>
+    <div class="panel">
+      <h2>Clan rank by skill</h2>
+      <p class="hint" id="rankHint">Where Overkill places among all clans for experience earned in the last 7 days.</p>
+      <div id="rankSkills"></div>
+    </div>
+    <div class="panel" style="margin-top:14px">
+      <h2>Compare against rivals</h2>
+      <p class="hint">Pick clans from this week's leaderboard to line up beside Overkill.</p>
+      <div class="controls">
+        <select id="rivalPick"><option value="">Add a clan…</option></select>
+        <button class="ghost" id="rivalClear">Clear</button>
+      </div>
+      <div class="tbl-scroll"><table id="rivalTable"></table></div>
+      <div id="rivalBars" style="margin-top:14px"></div>
+    </div>
+  </section>
+
+  <!-- TRENDS -->
+  <section class="view" id="view-trends" hidden>
+    <div class="tiles" id="trendTiles"></div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(340px,1fr))">
+      <div class="panel">
+        <h2>Weekly experience over time</h2>
+        <p class="hint">Each point is one daily snapshot of the trailing 7-day total.</p>
+        <div class="chart" id="chartHistXp"></div>
+      </div>
+      <div class="panel">
+        <h2>World rank over time</h2>
+        <p class="hint">Lower is better — the axis is inverted so up means climbing.</p>
+        <div class="chart" id="chartHistRank"></div>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:14px">
+      <h2>Member growth</h2>
+      <p class="hint">Total level gained since the first snapshot on record.</p>
+      <div class="tbl-scroll"><table id="trendMembers"></table></div>
+    </div>
+  </section>
+
+  <!-- VAULT -->
+  <section class="view" id="view-vault" hidden>
+    <div class="tiles" id="vaultTiles"></div>
+    <div class="panel">
+      <h2>Vault flow</h2>
+      <p class="hint">Value added and withdrawn per day, priced at the current player-market rate.</p>
+      <div class="legend">
+        <span><i style="background:var(--series-1)"></i>Added</span>
+        <span><i style="background:var(--series-2)"></i>Withdrawn</span>
+      </div>
+      <div class="chart" id="chartVault"></div>
+    </div>
+    <div class="panel" style="margin-top:14px">
+      <h2>Contributors</h2>
+      <p class="hint">Net value each member has moved through the clan vault over the log window. Nothing here is owed — it is a record, not a bill.</p>
+      <div class="tbl-scroll"><table id="vaultTable"></table></div>
+    </div>
+    <div class="panel" style="margin-top:14px">
+      <h2>Items moved</h2>
+      <p class="hint">Aggregated by item across the log window.</p>
+      <div class="tbl-scroll"><table id="itemTable"></table></div>
+    </div>
+  </section>
+
+  <!-- ACTIVITY -->
+  <section class="view" id="view-activity" hidden>
+    <div class="controls">
+      <select id="logFilter">
+        <option value="all">Everything</option>
+        <option value="vault">Vault only</option>
+        <option value="event">Clan events</option>
+        <option value="upgrade">Upgrades</option>
+        <option value="quest">Quests</option>
+      </select>
+      <select id="logMember"><option value="">All members</option></select>
+      <span class="dim" id="logCount" style="font-size:12.5px"></span>
+    </div>
+    <div class="panel"><div class="feed" id="logFeed"></div></div>
+  </section>
+
+  <footer>
+    <div id="footNote">Data from the Idle Clans public API (query.idleclans.com). This dashboard is unofficial and read-only.</div>
+  </footer>
+</div>
+<div class="tip" id="tip"></div>
+<script>
+"use strict";
+
+/* =====================================================================
+   CONFIG — change CLAN to point this dashboard at a different clan.
+   ===================================================================== */
+const CLAN     = "Overkill";
+const API      = "https://query.idleclans.com";
+const LOG_PAGES = 6;          // 6 x 200 = up to 1200 log entries
+const LOG_PAGE  = 200;
+const REFRESH_MS = 5 * 60 * 1000;
+
+/* Cross-origin fallbacks, tried in order. The first that works sticks. */
+const ROUTES = [
+  { name: "direct",     url: u => u },
+  { name: "corsproxy",  url: u => "https://corsproxy.io/?url=" + encodeURIComponent(u) },
+  { name: "allorigins", url: u => "https://api.allorigins.win/raw?url=" + encodeURIComponent(u) }
+];
+let routeIdx = 0, routeLocked = false;
+
+/* ---------------------------------------------------------------------
+   Idle Clans experience table — cumulative XP required for each level.
+   XP_TABLE[n] is the XP needed to reach level n+1.
+   ------------------------------------------------------------------- */
+const XP_TABLE = [
+  0,75,151,227,303,380,531,683,836,988,1141,1294,1447,1751,2054,2358,2663,2967,
+  3272,3577,4182,4788,5393,5999,6606,7212,7819,9026,10233,11441,12648,13856,15065,
+  16273,18682,21091,23500,25910,28319,30729,33140,37950,42761,47572,52383,57195,
+  62006,66818,76431,86043,95656,105269,114882,124496,134109,153323,172538,191752,
+  210967,230182,249397,268613,307028,345444,383861,422277,460694,499111,537528,
+  614346,691163,767981,844800,921618,998437,1075256,1228875,1382495,1536114,
+  1689734,1843355,1996975,2150596,2457817,2765038,3072260,3379481,3686703,3993926,
+  4301148,4915571,5529994,6144417,6758841,7373264,7987688,8602113,9830937,11059762,
+  12288587,13517412,14746238,15975063,17203889,19661516,22119142,24576769,27034396,
+  29492023,31949651,34407278,39322506,44237735,49152963,54068192,58983421,63898650,
+  68813880,78644309,88474739
+];
+const MAX_LEVEL = XP_TABLE.length; // 120
+
+function levelFromXp(xp){
+  if (!(xp > 0)) return 1;
+  let lo = 1, hi = MAX_LEVEL;
+  while (lo < hi){
+    const mid = (lo + hi + 1) >> 1;
+    if (xp >= XP_TABLE[mid - 1]) lo = mid; else hi = mid - 1;
+  }
+  return lo;
+}
+function progressInLevel(xp){
+  const lv = levelFromXp(xp);
+  if (lv >= MAX_LEVEL) return 1;
+  const a = XP_TABLE[lv - 1], b = XP_TABLE[lv];
+  return Math.max(0, Math.min(1, (xp - a) / (b - a)));
+}
+
+/* Three names exist for the same skill:
+     key   — what /api/Player/profile returns  ("attack")
+     wire  — what the clan-experience endpoints return ("Rigour", an internal
+             asset name that leaks through that one endpoint)
+     label — what the game actually shows players ("Attack")
+   `wire` defaults to `label` for every skill except attack. */
+const SKILLS = [
+  { key:"attack",        label:"Attack", wire:"Rigour", combat:true  },
+  { key:"strength",      label:"Strength",      combat:true  },
+  { key:"defence",       label:"Defence",       combat:true  },
+  { key:"archery",       label:"Archery",       combat:true  },
+  { key:"magic",         label:"Magic",         combat:true  },
+  { key:"health",        label:"Health",        combat:true  },
+  { key:"woodcutting",   label:"Woodcutting"  },
+  { key:"carpentry",     label:"Carpentry"    },
+  { key:"fishing",       label:"Fishing"      },
+  { key:"cooking",       label:"Cooking"      },
+  { key:"mining",        label:"Mining"       },
+  { key:"smithing",      label:"Smithing"     },
+  { key:"foraging",      label:"Foraging"     },
+  { key:"farming",       label:"Farming"      },
+  { key:"crafting",      label:"Crafting"     },
+  { key:"agility",       label:"Agility"      },
+  { key:"plundering",    label:"Plundering"   },
+  { key:"enchanting",    label:"Enchanting"   },
+  { key:"brewing",       label:"Brewing"      },
+  { key:"exterminating", label:"Exterminating"},
+  { key:"invocation",    label:"Invocation"   }
+];
+const KEY_TO_LABEL = Object.fromEntries(SKILLS.map(s => [s.key, s.label]));
+const KEY_TO_WIRE  = Object.fromEntries(SKILLS.map(s => [s.key, s.wire || s.label]));
+const WIRE_TO_LABEL = Object.fromEntries(SKILLS.map(s => [s.wire || s.label, s.label]));
+/* Translate a skill name as the API returned it into the in-game name. */
+function skillLabel(wireName){ return WIRE_TO_LABEL[wireName] || wireName; }
+const RANKS = { 2:"Leader", 1:"Deputy", 0:"Member" };
+
+/* =====================================================================
+   Formatting helpers
+   ===================================================================== */
+const nf = new Intl.NumberFormat("en-US");
+function num(n){ return nf.format(Math.round(n || 0)); }
+function abbr(n){
+  const v = Math.abs(n || 0);
+  if (v >= 1e9) return (n/1e9).toFixed(v >= 1e10 ? 1 : 2).replace(/\.0+$/,"") + "B";
+  if (v >= 1e6) return (n/1e6).toFixed(v >= 1e7 ? 1 : 2).replace(/\.0+$/,"") + "M";
+  if (v >= 1e3) return (n/1e3).toFixed(v >= 1e4 ? 0 : 1).replace(/\.0$/,"") + "K";
+  return String(Math.round(n || 0));
+}
+function gold(n){ return abbr(n) + " gp"; }
+function pct(n){ return (n*100).toFixed(1) + "%"; }
+function esc(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function ago(hours){
+  if (hours == null) return "—";
+  if (hours < 1)  return Math.max(1, Math.round(hours*60)) + "m";
+  if (hours < 48) return Math.round(hours) + "h";
+  return Math.round(hours/24) + "d";
+}
+function dateShort(iso){
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return isNaN(d) ? "—" : d.toLocaleDateString(undefined,{month:"short",day:"numeric",year:"2-digit"});
+}
+function daysSince(iso){
+  if (!iso) return null;
+  const d = new Date(iso);
+  return isNaN(d) ? null : (Date.now() - d.getTime()) / 86400000;
+}
+
+/* =====================================================================
+   Fetch layer
+   ===================================================================== */
+async function tryRoute(i, path, signal){
+  const target = API + path;
+  const res = await fetch(ROUTES[i].url(target), { signal, headers:{ "Accept":"application/json" } });
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+
+async function api(path, { optional = false } = {}){
+  let lastErr;
+  // Preferred route first, then the rest as fallbacks.
+  const order = [routeIdx, ...ROUTES.map((_, i) => i).filter(i => i !== routeIdx)];
+  for (const i of order){
+    // Once a route is proven, don't re-probe the others on every call —
+    // only fall through if the proven one actually fails.
+    if (routeLocked && i !== routeIdx && !lastErr) continue;
+    const ctl = new AbortController();
+    const to = setTimeout(() => ctl.abort(), 30000);
+    try {
+      const data = await tryRoute(i, path, ctl.signal);
+      routeIdx = i; routeLocked = true; state.route = ROUTES[i].name;
+      return data;
+    } catch (e){
+      lastErr = e;
+    } finally {
+      clearTimeout(to);
+    }
+  }
+  if (optional) return null;
+  throw lastErr || new Error("request failed");
+}
+
+async function pooled(items, worker, limit = 5){
+  const out = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true){
+      const i = next++;
+      if (i >= items.length) return;
+      try { out[i] = await worker(items[i], i); } catch { out[i] = null; }
+    }
+  }));
+  return out;
+}
+
+/* =====================================================================
+   State
+   ===================================================================== */
+const state = {
+  clan:null, members:[], byName:new Map(),
+  xp:{ 24:null, 168:null },
+  timeline:[], logs:[],
+  items:new Map(),          // lowercase name -> {id,name,baseValue,tradeable}
+  prices:new Map(),         // itemId -> price
+  vault:null,
+  route:"direct", loadedAt:null, errors:[]
+};
+
+/* =====================================================================
+   Vault log parsing
+   ===================================================================== */
+const RE_ADD   = /^(.+?) added ([\d.,]+)x (.+?) \(tier (\d+)\)\.?$/i;
+const RE_TAKE  = /^(.+?) withdrew ([\d.,]+)x (.+?) from tier (\d+)\.?$/i;
+const RE_GOLD  = /^(.+?) (added|withdrew|deposited|donated) ([\d.,]+) (?:gold|gp|coins)\b/i;
+const RE_EVENT = / has started an? (.+?) event with /i;
+const RE_UPGR  = / (?:bought|purchased) the upgrade /i;
+const RE_QUEST = / completed an? .*quest/i;
+
+function parseQty(s){ return Number(String(s).replace(/[.,]/g, "")) || 0; }
+
+function priceOf(itemName){
+  const meta = state.items.get(itemName.toLowerCase());
+  if (!meta) return { price:0, meta:null, known:false };
+  const p = state.prices.get(meta.id);
+  const price = (p && (p.lowestSellPrice || p.highestBuyPrice)) || meta.baseValue || 0;
+  return { price, meta, known: !!p || !!meta.baseValue };
+}
+
+function classifyLog(msg){
+  if (RE_ADD.test(msg) || RE_TAKE.test(msg) || RE_GOLD.test(msg)) return "vault";
+  if (RE_EVENT.test(msg)) return "event";
+  if (RE_UPGR.test(msg))  return "upgrade";
+  if (RE_QUEST.test(msg)) return "quest";
+  return "other";
+}
+
+function buildVault(){
+  const byMember = new Map();
+  const byItem   = new Map();
+  const byDay    = new Map();
+  let addedValue = 0, takenValue = 0, unpriced = 0, rows = 0;
+
+  const bump = (map, key, init) => { if (!map.has(key)) map.set(key, init()); return map.get(key); };
+
+  for (const log of state.logs){
+    const msg = log.message || "";
+    let m, dir = null, qty = 0, item = null, tier = null, value = 0;
+
+    if ((m = msg.match(RE_ADD)))        { dir = 1;  qty = parseQty(m[2]); item = m[3]; tier = +m[4]; }
+    else if ((m = msg.match(RE_TAKE)))  { dir = -1; qty = parseQty(m[2]); item = m[3]; tier = +m[4]; }
+    else if ((m = msg.match(RE_GOLD)))  { dir = /withdrew/i.test(m[2]) ? -1 : 1; qty = parseQty(m[3]); item = "Gold"; }
+    else continue;
+
+    let unit = 1;
+    if (item !== "Gold"){
+      const p = priceOf(item);
+      unit = p.price;
+      if (!p.price) unpriced++;
+    }
+    value = qty * unit;
+    rows++;
+
+    const who = log.memberUsername || m[1] || "Unknown";
+    const mem = bump(byMember, who, () => ({ name:who, inQty:0, outQty:0, inValue:0, outValue:0, actions:0, last:null }));
+    mem.actions++;
+    if (dir > 0){ mem.inQty += qty;  mem.inValue += value;  addedValue += value; }
+    else        { mem.outQty += qty; mem.outValue += value; takenValue += value; }
+    if (!mem.last || log.timestamp > mem.last) mem.last = log.timestamp;
+
+    const it = bump(byItem, item, () => ({ name:item, inQty:0, outQty:0, unit, value:0, priced: item === "Gold" || unit > 0 }));
+    it.unit = unit;
+    if (dir > 0) it.inQty += qty; else it.outQty += qty;
+    it.value = (it.inQty + it.outQty) * unit;
+
+    const day = (log.timestamp || "").slice(0,10);
+    const d = bump(byDay, day, () => ({ day, added:0, taken:0 }));
+    if (dir > 0) d.added += value; else d.taken += value;
+  }
+
+  const members = [...byMember.values()].map(v => ({ ...v, net: v.inValue - v.outValue }))
+                                        .sort((a,b) => b.inValue - a.inValue);
+  const items   = [...byItem.values()].sort((a,b) => b.value - a.value);
+  const days    = [...byDay.values()].sort((a,b) => a.day < b.day ? -1 : 1);
+
+  const span = state.logs.length
+    ? { from: state.logs[state.logs.length-1].timestamp, to: state.logs[0].timestamp }
+    : null;
+
+  return { members, items, days, addedValue, takenValue, unpriced, rows, span };
+}
+</script>
+<script>
+"use strict";
+
+/* =====================================================================
+   Tiny DOM helpers
+   ===================================================================== */
+const $  = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const tip = $("#tip");
+function showTip(html, x, y){
+  tip.innerHTML = html;
+  tip.classList.add("on");
+  const r = tip.getBoundingClientRect();
+  const left = Math.min(window.innerWidth - r.width - 10, Math.max(10, x + 14));
+  tip.style.left = left + "px";
+  tip.style.top  = Math.max(8, y - r.height - 12) + "px";
+}
+function hideTip(){ tip.classList.remove("on"); }
+
+function setStatus(kind, text){
+  const d = $("#statusDot");
+  d.className = "dot " + kind;
+  $("#statusText").textContent = text;
+}
+function banner(kind, html){
+  const b = document.createElement("div");
+  b.className = "banner " + kind;
+  b.innerHTML = html;
+  $("#banners").appendChild(b);
+}
+
+/* =====================================================================
+   Chart primitives (hand-rolled SVG, 2px lines, recessive grid)
+   ===================================================================== */
+const CSS = getComputedStyle(document.documentElement);
+const C1 = CSS.getPropertyValue("--series-1").trim() || "#3987e5";
+const C2 = CSS.getPropertyValue("--series-2").trim() || "#e66767";
+
+function areaChart(host, points, opts){
+  // points: [{x:Date, y:Number, meta}]
+  const W = 720, H = 220, P = { t:12, r:10, b:26, l:46 };
+  if (!points.length){ host.innerHTML = '<div class="empty">No experience recorded in this window.</div>'; return; }
+  const fmt = opts.fmt || abbr;
+  const showArea = opts.area !== false && !opts.invert;
+  const xs = points.map(p => +p.x), ys = points.map(p => p.y);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  // Inverted charts (world rank: lower is better) get a padded domain around
+  // the data; normal charts anchor at zero so bar heights stay honest.
+  const yMin = opts.invert ? Math.max(0, Math.min(...ys) - 1) : 0;
+  const yMax = opts.invert ? Math.max(...ys) + 1 : (Math.max(...ys) || 1);
+  const yRange = Math.max(1e-9, yMax - yMin);
+  const sx = v => P.l + ((v - x0) / Math.max(1, x1 - x0)) * (W - P.l - P.r);
+  const sy = v => opts.invert
+    ? P.t + ((v - yMin) / yRange) * (H - P.t - P.b)
+    : H - P.b - ((v - yMin) / yRange) * (H - P.t - P.b);
+
+  const ticks = 4, gl = [], lbl = [];
+  for (let i = 0; i <= ticks; i++){
+    const v = yMin + (yRange / ticks) * i, y = sy(v);
+    gl.push(`<line class="gridline" x1="${P.l}" y1="${y.toFixed(1)}" x2="${W-P.r}" y2="${y.toFixed(1)}"/>`);
+    lbl.push(`<text class="axis-txt" x="${P.l-8}" y="${(y+3.5).toFixed(1)}" text-anchor="end">${fmt(v)}</text>`);
+  }
+  const xt = [];
+  for (let i = 0; i <= 4; i++){
+    const t = x0 + ((x1 - x0) / 4) * i;
+    xt.push(`<text class="axis-txt" x="${sx(t).toFixed(1)}" y="${H-8}" text-anchor="${i===0?"start":i===4?"end":"middle"}">${
+      new Date(t).toLocaleDateString(undefined,{month:"short",day:"numeric"})}</text>`);
+  }
+  const line = points.map((p,i) => (i ? "L" : "M") + sx(+p.x).toFixed(1) + " " + sy(p.y).toFixed(1)).join(" ");
+  const area = showArea ? line + ` L ${sx(x1).toFixed(1)} ${H-P.b} L ${sx(x0).toFixed(1)} ${H-P.b} Z` : "";
+
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(opts.aria||"")}">
+    <defs><linearGradient id="ag" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="${C1}" stop-opacity=".38"/>
+      <stop offset="100%" stop-color="${C1}" stop-opacity="0"/>
+    </linearGradient></defs>
+    ${gl.join("")}
+    ${showArea ? `<path d="${area}" fill="url(#ag)"/>` : ""}
+    <path d="${line}" fill="none" stroke="${C1}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <line id="cross" x1="0" y1="${P.t}" x2="0" y2="${H-P.b}" stroke="${C1}" stroke-width="1" opacity="0"/>
+    <circle id="cdot" r="4" fill="${C1}" stroke="var(--surface-1)" stroke-width="2" opacity="0"/>
+    ${lbl.join("")}${xt.join("")}
+    <rect id="hit" x="${P.l}" y="0" width="${W-P.l-P.r}" height="${H}" fill="transparent"/>
+  </svg>`;
+
+  const svg = host.querySelector("svg");
+  const cross = host.querySelector("#cross"), cdot = host.querySelector("#cdot");
+  svg.addEventListener("pointermove", ev => {
+    const rect = svg.getBoundingClientRect();
+    const vx = ((ev.clientX - rect.left) / rect.width) * W;
+    let best = 0, bd = Infinity;
+    points.forEach((p,i) => { const d = Math.abs(sx(+p.x) - vx); if (d < bd){ bd = d; best = i; } });
+    const p = points[best];
+    cross.setAttribute("x1", sx(+p.x)); cross.setAttribute("x2", sx(+p.x)); cross.setAttribute("opacity",".55");
+    cdot.setAttribute("cx", sx(+p.x)); cdot.setAttribute("cy", sy(p.y)); cdot.setAttribute("opacity","1");
+    showTip(`<div class="tk">${p.x.toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric"})}</div>
+             <div><strong>${esc(opts.tipFmt ? opts.tipFmt(p.y) : num(p.y))}</strong> ${esc(opts.unit || "xp")}</div>
+             ${p.gap != null ? `<div class="tk">covers the previous ${p.gap.toFixed(1)}h</div>` : ""}
+             ${p.meta != null ? `<div class="tk">${p.meta} member${p.meta===1?"":"s"} earning</div>` : ""}`,
+             ev.clientX, ev.clientY);
+  });
+  svg.addEventListener("pointerleave", () => { hideTip(); cross.setAttribute("opacity","0"); cdot.setAttribute("opacity","0"); });
+}
+
+function groupedBars(host, rows, opts){
+  // rows: [{label, a, b}]  a = series1, b = series2
+  const n = rows.length;
+  if (!n){ host.innerHTML = '<div class="empty">No vault movement in this window.</div>'; return; }
+  const W = 720, H = 220, P = { t:12, r:10, b:26, l:52 };
+  const max = Math.max(1, ...rows.flatMap(r => [r.a, r.b]));
+  const band = (W - P.l - P.r) / n;
+  const bw = Math.max(3, Math.min(18, band/2 - 3));  // 2px surface gap between adjacent fills
+  const sy = v => H - P.b - (v / max) * (H - P.t - P.b);
+
+  let gl = "", lbl = "";
+  for (let i = 0; i <= 4; i++){
+    const v = (max/4)*i, y = sy(v);
+    gl  += `<line class="gridline" x1="${P.l}" y1="${y.toFixed(1)}" x2="${W-P.r}" y2="${y.toFixed(1)}"/>`;
+    lbl += `<text class="axis-txt" x="${P.l-8}" y="${(y+3.5).toFixed(1)}" text-anchor="end">${abbr(v)}</text>`;
+  }
+  const bars = rows.map((r,i) => {
+    const cx = P.l + band*i + band/2;
+    const ax = cx - bw - 1, bx = cx + 1;
+    const ah = Math.max(r.a > 0 ? 2 : 0, (H-P.b) - sy(r.a));
+    const bh = Math.max(r.b > 0 ? 2 : 0, (H-P.b) - sy(r.b));
+    return `<g data-i="${i}">
+      <rect x="${ax.toFixed(1)}" y="${(H-P.b-ah).toFixed(1)}" width="${bw.toFixed(1)}" height="${ah.toFixed(1)}" rx="3" fill="${C1}"/>
+      <rect x="${bx.toFixed(1)}" y="${(H-P.b-bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="3" fill="${C2}"/>
+      <rect class="hit" x="${(cx-band/2).toFixed(1)}" y="0" width="${band.toFixed(1)}" height="${H-P.b}" fill="transparent"/>
+    </g>`;
+  }).join("");
+  const step = Math.ceil(n / 7);
+  const xt = rows.map((r,i) => i % step ? "" :
+    `<text class="axis-txt" x="${(P.l+band*i+band/2).toFixed(1)}" y="${H-8}" text-anchor="middle">${esc(r.short)}</text>`).join("");
+
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(opts.aria||"")}">
+    ${gl}${bars}${lbl}${xt}</svg>`;
+
+  host.querySelectorAll("g[data-i]").forEach(g => {
+    const r = rows[+g.dataset.i];
+    g.addEventListener("pointermove", ev => showTip(
+      `<div class="tk">${esc(r.label)}</div>
+       <div><span style="color:${C1}">&#9632;</span> Added <strong>${gold(r.a)}</strong></div>
+       <div><span style="color:${C2}">&#9632;</span> Withdrawn <strong>${gold(r.b)}</strong></div>`, ev.clientX, ev.clientY));
+    g.addEventListener("pointerleave", hideTip);
+  });
+}
+
+function barList(host, rows, opts = {}){
+  if (!rows.length){ host.innerHTML = '<div class="empty">Nothing to show.</div>'; return; }
+  const max = Math.max(...rows.map(r => r.value)) || 1;
+  host.innerHTML = rows.map(r => `
+    <div class="barrow">
+      <div class="lbl" title="${esc(r.label)}">${esc(r.label)}</div>
+      <div class="track"><div class="fill" style="width:${Math.max(1,(r.value/max)*100).toFixed(2)}%;background:${r.color || C1}"></div></div>
+      <div class="val">${esc(r.display ?? abbr(r.value))}</div>
+    </div>`).join("");
+}
+
+/* =====================================================================
+   Data loading
+   ===================================================================== */
+async function loadAll(){
+  $("#banners").innerHTML = "";
+  state.errors = [];
+  setStatus("load", "Loading…");
+
+  let clan;
+  try {
+    clan = await api(`/api/Clan/recruitment/${encodeURIComponent(CLAN)}`);
+  } catch (e){
+    setStatus("err", "Could not reach the API");
+    banner("err", `<div><strong>Couldn't load clan data.</strong><br>
+      The Idle Clans API refused every route this page can use (direct, and two public relays).
+      If you're opening this file straight from disk, try hosting it instead — some browsers
+      block cross-origin requests from <code>file://</code> pages. Error: ${esc(e.message)}</div>`);
+    return;
+  }
+  state.clan = clan;
+
+  const names = (clan.memberlist || []).map(m => m.memberName);
+  const rankOf = new Map((clan.memberlist || []).map(m => [m.memberName, m.rank]));
+
+  $("#clanTitle").textContent = clan.clanName || CLAN;
+  $("#crest").textContent = (clan.tag || CLAN.slice(0,3)).toUpperCase().slice(0,4);
+  $("#clanSub").innerHTML =
+    `${names.length} members · ${clan.isRecruiting ? "recruiting" : "closed"} · ` +
+    `min total level ${num(clan.minimumTotalLevelRequired)} · ${esc(clan.language || "—")}` +
+    (clan.isPrestige ? " · <span class='pos'>prestige</span>" : "");
+
+  const [items, prices, xp24, xp168, timeline, logs, profiles] = await Promise.all([
+    api("/api/Items/metadata", { optional:true }),
+    api("/api/PlayerMarket/items/prices/latest", { optional:true }),
+    api(`/api/Clan/${encodeURIComponent(CLAN)}/experience?hours=24`,  { optional:true }),
+    api(`/api/Clan/${encodeURIComponent(CLAN)}/experience?hours=168`, { optional:true }),
+    api(`/api/Clan/${encodeURIComponent(CLAN)}/experience/timeline?hours=168`, { optional:true }),
+    loadLogs(),
+    pooled(names, n => api(`/api/Player/profile/${encodeURIComponent(n)}`, { optional:true }), 5)
+  ]);
+
+  state.items.clear();
+  (items || []).forEach(it => state.items.set(String(it.name).toLowerCase(), it));
+  state.prices.clear();
+  (prices || []).forEach(p => state.prices.set(p.itemId, p));
+  state.xp[24] = xp24; state.xp[168] = xp168;
+  state.timeline = Array.isArray(timeline) ? timeline : [];
+  state.logs = logs;
+
+  const gain = h => {
+    const map = new Map();
+    ((state.xp[h] && state.xp[h].playerContributions) || []).forEach(p => map.set(p.username, p));
+    return map;
+  };
+  const g24 = gain(24), g168 = gain(168);
+
+  state.members = names.map((name, i) => {
+    const prof = profiles[i] || null;
+    const sx = (prof && prof.skillExperiences) || {};
+    let totalLevel = 0, totalXp = 0, combatLevel = 0;
+    const skills = SKILLS.map(s => {
+      const xp = Number(sx[s.key] || 0);
+      const lv = levelFromXp(xp);
+      totalLevel += lv; totalXp += xp;
+      if (s.combat) combatLevel += lv;
+      return { ...s, xp, level:lv, progress: progressInLevel(xp) };
+    });
+    const c24 = g24.get(name), c168 = g168.get(name);
+    return {
+      name, rank: rankOf.get(name) ?? 0, profile: prof, skills,
+      totalLevel, totalXp, combatLevel,
+      xp24:  c24  ? c24.totalExperience  : 0,
+      xp168: c168 ? c168.totalExperience : 0,
+      skills24:  (c24  && c24.skills)  || {},
+      skills168: (c168 && c168.skills) || {},
+      credits: prof ? (prof.creditsAcquiredForClan || 0) : 0,
+      joined:  prof ? prof.guildJoinDate : null,
+      offline: prof ? prof.hoursOffline : null,
+      lastTask: prof ? prof.taskNameOnLogout : null,
+      gameMode: prof ? prof.gameMode : null,
+      missing: !prof
+    };
+  });
+  state.byName = new Map(state.members.map(m => [m.name, m]));
+  state.vault = buildVault();
+  if (typeof loadExtras === "function") await loadExtras();
+  state.loadedAt = new Date();
+
+  const missing = state.members.filter(m => m.missing).length;
+  if (missing) banner("warn", `<div>${missing} member profile${missing===1?"":"s"} didn't load, so their levels show as blank. Hit refresh to retry.</div>`);
+  if (state.vault.unpriced) banner("warn", `<div>${state.vault.unpriced} vault entries reference items with no market listing — they're counted by quantity but valued at 0.</div>`);
+
+  setStatus("live", `Updated ${state.loadedAt.toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"})}${state.route!=="direct" ? " · via "+state.route : ""}`);
+  renderAll();
+}
+
+async function loadLogs(){
+  const out = [];
+  for (let p = 0; p < LOG_PAGES; p++){
+    const page = await api(`/api/Clan/logs/clan/${encodeURIComponent(CLAN)}?skip=${p*LOG_PAGE}&limit=${LOG_PAGE}`, { optional:true });
+    if (!Array.isArray(page) || !page.length) break;
+    out.push(...page);
+    if (page.length < LOG_PAGE) break;
+  }
+  return out;
+}
+
+/* =====================================================================
+   Render — Overview
+   ===================================================================== */
+function tile(k, v, m, cls){
+  return `<div class="tile"><div class="k">${k}</div><div class="v ${cls||""}">${v}</div>${m ? `<div class="m">${m}</div>` : ""}</div>`;
+}
+
+function renderOverview(){
+  const ms = state.members;
+  const clanXp7 = state.xp[168] ? state.xp[168].totalExperience : 0;
+  const clanXp1 = state.xp[24]  ? state.xp[24].totalExperience  : 0;
+  const top = [...ms].sort((a,b) => b.xp168 - a.xp168)[0];
+  const avgTotal = ms.length ? ms.reduce((s,m) => s + m.totalLevel, 0) / ms.length : 0;
+  const active7 = ms.filter(m => m.xp168 > 0).length;
+  const v = state.vault || { addedValue:0, takenValue:0 };
+
+  $("#ovTiles").innerHTML = [
+    tile("Members", num(ms.length), `${active7} earned xp this week`),
+    tile("Clan xp · 7 days", abbr(clanXp7), `${abbr(clanXp1)} in the last 24h`),
+    tile("Top contributor", top && top.xp168 ? esc(top.name) : "—", top && top.xp168 ? abbr(top.xp168) + " xp" : "no xp recorded", "sm"),
+    tile("Average total level", avgTotal ? avgTotal.toFixed(0) : "—", `requirement ${num(state.clan.minimumTotalLevelRequired)}`),
+    tile("Activity score", (state.clan.activityScore ?? 0).toFixed(1), "reported by the game"),
+    tile("Vault added", gold(v.addedValue), `${gold(v.takenValue)} withdrawn`)
+  ].join("");
+
+  renderTimeline();
+
+  barList($("#ovTop"), [...ms].filter(m => m.xp168 > 0).sort((a,b) => b.xp168 - a.xp168).slice(0,10)
+    .map(m => ({ label:m.name, value:m.xp168, display:abbr(m.xp168) })));
+
+  let clanSkills = {};
+  try { clanSkills = JSON.parse(state.clan.serializedSkills || "{}"); } catch {}
+  const skillRows = Object.entries(clanSkills).map(([wire,xp]) => ({ label:skillLabel(wire), value:Number(xp)||0 }))
+    .sort((a,b) => b.value - a.value).map(r => ({ ...r, display:abbr(r.value) }));
+  barList($("#ovSkills"), skillRows);
+
+  const health = [...ms].sort((a,b) => (b.offline ?? -1) - (a.offline ?? -1)).map(m => ({
+    label: m.name,
+    value: m.offline == null ? 0 : Math.min(m.offline, 24*30),
+    display: m.offline == null ? "—" : ago(m.offline) + " offline",
+    color: m.offline == null ? "#4a4a45" : m.offline > 24*7 ? C2 : m.offline > 48 ? "#c98500" : "#199e70"
+  }));
+  barList($("#ovHealth"), health);
+}
+
+/* ---------------------------------------------------------------------
+   Clan experience timeline.
+   The API returns snapshots, not fixed buckets: each entry is the xp the
+   clan earned since the previous snapshot, taken roughly every 2 hours,
+   with occasional irregular gaps. Uneven gaps distort a raw area chart —
+   a longer gap looks like a spike — so "Per hour" divides each point by
+   its own gap and gives a shape you can actually compare across the week.
+   ------------------------------------------------------------------- */
+let tlMode = "raw";
+
+function renderTimeline(){
+  const raw = state.timeline
+    .map(t => ({ at:new Date(t.timestamp), xp:Number(t.totalExperience||0), members:t.playerCount }))
+    .filter(p => !isNaN(p.at))
+    .sort((a,b) => a.at - b.at);
+
+  if (!raw.length){
+    $("#chartTimeline").innerHTML = '<div class="empty">No timeline data returned for this window.</div>';
+    $("#tlHint").textContent = "No timeline data returned for this window.";
+    return;
+  }
+
+  // Gap (hours) each point covers; the first point borrows the second's gap.
+  const gaps = raw.map((p,i) => i ? (p.at - raw[i-1].at) / 3600e3 : null);
+  const fallback = gaps.find(g => g != null) || 2;
+  gaps[0] = fallback;
+
+  const pts = raw.map((p,i) => ({
+    x: p.at,
+    y: tlMode === "rate" ? p.xp / Math.max(0.1, gaps[i]) : p.xp,
+    meta: p.members,
+    gap: gaps[i],
+    total: p.xp
+  }));
+
+  areaChart($("#chartTimeline"), pts, {
+    aria: `Clan experience per ${tlMode === "rate" ? "hour" : "snapshot"} over the last seven days`,
+    unit: tlMode === "rate" ? "xp/hour" : "xp"
+  });
+
+  const sorted = [...gaps].sort((a,b) => a - b);
+  const median = sorted[Math.floor(sorted.length/2)];
+  const span = (raw[raw.length-1].at - raw[0].at) / 3600e3;
+  const busiest = raw.reduce((m,p) => p.xp > m.xp ? p : m, raw[0]);
+  $("#tlHint").textContent =
+    `${raw.length} snapshots across ${Math.round(span)}h · one roughly every ${median.toFixed(1)}h · ` +
+    `busiest ${busiest.at.toLocaleString(undefined,{weekday:"short",hour:"numeric"})} with ${abbr(busiest.xp)} xp`;
+}
+
+/* =====================================================================
+   Render — Roster
+   ===================================================================== */
+const rosterSort = { key:"totalLevel", dir:-1 };
+let rosterSkillKey = "";
+
+function renderRoster(){
+  const q = $("#rosterSearch").value.trim().toLowerCase();
+  let rows = state.members.filter(m => !q || m.name.toLowerCase().includes(q));
+
+  const cols = [
+    { key:"name",        label:"Member",   get:m => m.name, cell:m => `<div class="name-cell"><span>${esc(m.name)}</span>${
+        m.rank === 2 ? '<span class="pill leader">Leader</span>' : m.rank === 1 ? '<span class="pill deputy">Deputy</span>' : ""}</div>` },
+    { key:"totalLevel",  label:"Total lvl",get:m => m.totalLevel, cell:m => m.missing ? "—" : `<strong>${num(m.totalLevel)}</strong>` },
+    { key:"combatLevel", label:"Combat lvls", title:"Sum of the six combat skill levels", get:m => m.combatLevel, cell:m => m.missing ? "—" : num(m.combatLevel) },
+    { key:"totalXp",     label:"Total xp", get:m => m.totalXp, cell:m => m.missing ? "—" : abbr(m.totalXp) },
+    { key:"xp168",       label:"7d xp",    get:m => m.xp168, cell:m => m.xp168 ? `<span class="pos">${abbr(m.xp168)}</span>` : '<span class="dim">0</span>' },
+    { key:"xp24",        label:"24h xp",   get:m => m.xp24,  cell:m => m.xp24  ? abbr(m.xp24) : '<span class="dim">0</span>' },
+    { key:"credits",     label:"Clan credits", get:m => m.credits, cell:m => num(m.credits) },
+    { key:"vaultIn",     label:"Vault in", get:m => vaultIn(m.name), cell:m => { const v = vaultIn(m.name); return v ? gold(v) : '<span class="dim">—</span>'; } },
+    { key:"offline",     label:"Last seen",get:m => -(m.offline ?? 1e9), cell:m => m.offline == null ? "—" :
+        `<span class="pill ${m.offline < 24 ? "on" : "off"}">${ago(m.offline)}</span>` },
+    { key:"joined",      label:"Joined",   get:m => -(daysSince(m.joined) ?? 1e9), cell:m => dateShort(m.joined) }
+  ];
+  if (rosterSkillKey){
+    const lbl = KEY_TO_LABEL[rosterSkillKey];
+    cols.splice(4, 0, {
+      key:"skill", label:lbl, get:m => (m.skills.find(s => s.key === rosterSkillKey) || {}).xp || 0,
+      cell:m => { const s = m.skills.find(x => x.key === rosterSkillKey); return m.missing || !s ? "—" : `${s.level} <span class="dim">${abbr(s.xp)}</span>`; }
+    });
+  }
+
+  const col = cols.find(c => c.key === rosterSort.key) || cols[1];
+  rows.sort((a,b) => {
+    const av = col.get(a), bv = col.get(b);
+    if (typeof av === "string" || typeof bv === "string")
+      return rosterSort.dir * String(av).localeCompare(String(bv));
+    return rosterSort.dir * ((av || 0) - (bv || 0));
+  });
+
+  $("#rosterCount").textContent = `${rows.length} of ${state.members.length} shown`;
+  $("#rosterTable").innerHTML =
+    `<thead><tr>${cols.map(c => `<th data-k="${c.key}"${c.title ? ` title="${esc(c.title)}"` : ""}>${c.label}${
+      rosterSort.key === c.key ? `<span class="ar">${rosterSort.dir === -1 ? "▼" : "▲"}</span>` : ""}</th>`).join("")}</tr></thead>
+     <tbody>${rows.map(m => `<tr data-n="${esc(m.name)}">${cols.map(c => `<td>${c.cell(m)}</td>`).join("")}</tr>`).join("")}</tbody>`;
+
+  $$("#rosterTable thead th").forEach(th => th.onclick = () => {
+    const k = th.dataset.k;
+    if (rosterSort.key === k) rosterSort.dir *= -1;
+    else { rosterSort.key = k; rosterSort.dir = k === "name" ? 1 : -1; }
+    renderRoster();
+  });
+  $$("#rosterTable tbody tr").forEach(tr => tr.onclick = () => showMember(tr.dataset.n));
+}
+function vaultIn(name){
+  const v = state.vault && state.vault.members.find(m => m.name === name);
+  return v ? v.inValue : 0;
+}
+
+function showMember(name){
+  const m = state.byName.get(name);
+  if (!m) return;
+  $("#memberPanel").hidden = false;
+  $("#memberName").textContent = m.name;
+  const v = state.vault && state.vault.members.find(x => x.name === name);
+  $("#memberMeta").innerHTML = [
+    RANKS[m.rank] || "Member",
+    m.missing ? "profile unavailable" : `total level ${num(m.totalLevel)} · ${abbr(m.totalXp)} xp`,
+    `${abbr(m.xp168)} xp this week`,
+    m.offline == null ? "" : `last seen ${ago(m.offline)} ago${m.lastTask ? ` (${esc(m.lastTask)})` : ""}`,
+    m.joined ? `joined ${dateShort(m.joined)}` : "",
+    v ? `vault: ${gold(v.inValue)} in / ${gold(v.outValue)} out` : ""
+  ].filter(Boolean).join(" · ");
+  $("#memberSkills").innerHTML = m.skills.map(s => `
+    <div class="sk" title="${esc(s.label)} — ${num(s.xp)} xp">
+      <div class="n">${s.label}</div>
+      <div class="l">${m.missing ? "—" : s.level}</div>
+      <div class="x">${m.missing ? "" : abbr(s.xp)}</div>
+      <div class="track" style="height:3px;margin-top:5px;background:#ffffff0f;border-radius:2px;overflow:hidden">
+        <div style="height:100%;width:${(s.progress*100).toFixed(1)}%;background:${s.level >= MAX_LEVEL ? "#c98500" : C1}"></div>
+      </div>
+    </div>`).join("");
+  if (typeof loadMemberTimeline === "function") loadMemberTimeline(name);
+  $("#memberPanel").scrollIntoView({ behavior:"smooth", block:"nearest" });
+}
+
+/* =====================================================================
+   Render — XP race
+   ===================================================================== */
+let raceHours = 168, raceSkill = "";
+
+function renderRace(){
+  const data = state.xp[raceHours];
+  const label = raceHours === 24 ? "last 24 hours" : "last 7 days";
+  if (!data){ $("#raceBars").innerHTML = '<div class="empty">No experience data returned for this window.</div>'; $("#raceTiles").innerHTML=""; return; }
+
+  const contrib = data.playerContributions || [];
+  const wire = raceSkill ? KEY_TO_WIRE[raceSkill] : null;
+  const value = p => wire
+    ? ((p.skills && p.skills[wire] && p.skills[wire].experience) || 0)
+    : (p.totalExperience || 0);
+
+  const rows = contrib.map(p => ({ label:p.username, value:value(p) }))
+                      .filter(r => r.value > 0)
+                      .sort((a,b) => b.value - a.value)
+                      .map(r => ({ ...r, display:abbr(r.value) }));
+
+  const total = rows.reduce((s,r) => s + r.value, 0);
+  const idle = state.members.filter(m => !contrib.some(p => p.username === m.name && value(p) > 0));
+  const hoursSpan = raceHours;
+
+  $("#raceTiles").innerHTML = [
+    tile("Clan xp", abbr(total), `${label}`),
+    tile("Per hour", abbr(total / hoursSpan), "clan-wide average"),
+    tile("Earning members", `${rows.length}`, `${idle.length} idle in this window`),
+    tile("Leader", rows[0] ? esc(rows[0].label) : "—", rows[0] ? abbr(rows[0].value) + " xp" : "", "sm")
+  ].join("");
+
+  $("#raceTitle").textContent = raceSkill ? `${KEY_TO_LABEL[raceSkill]} experience gained` : "Experience gained";
+  $("#raceHint").textContent = `${label} · ${rows.length} members earning` +
+    (idle.length ? ` · idle: ${idle.slice(0,6).map(m => m.name).join(", ")}${idle.length > 6 ? ` +${idle.length-6}` : ""}` : "");
+  barList($("#raceBars"), rows);
+
+  const totals = data.skillTotals || {};
+  barList($("#raceSkillBars"), Object.entries(totals).map(([k,v]) => ({ label:skillLabel(k), value:Number(v)||0 }))
+    .filter(r => r.value > 0).sort((a,b) => b.value - a.value).map(r => ({ ...r, display:abbr(r.value) })));
+}
+
+/* =====================================================================
+   Render — Vault
+   ===================================================================== */
+function renderVault(){
+  const v = state.vault;
+  if (!v || !v.rows){
+    $("#vaultTiles").innerHTML = "";
+    $("#vaultTable").innerHTML = "";
+    $("#itemTable").innerHTML = "";
+    $("#chartVault").innerHTML = '<div class="empty">No vault activity found in the available clan log.</div>';
+    return;
+  }
+  const spanTxt = v.span ? `${dateShort(v.span.from)} → ${dateShort(v.span.to)}` : "";
+  $("#vaultTiles").innerHTML = [
+    tile("Value added", gold(v.addedValue), spanTxt),
+    tile("Value withdrawn", gold(v.takenValue), `${v.rows} vault actions logged`),
+    tile("Net into vault", gold(v.addedValue - v.takenValue), "added minus withdrawn"),
+    tile("Top depositor", v.members[0] ? esc(v.members[0].name) : "—", v.members[0] ? gold(v.members[0].inValue) : "", "sm")
+  ].join("");
+
+  groupedBars($("#chartVault"), v.days.map(d => ({
+    label: new Date(d.day + "T00:00:00Z").toLocaleDateString(undefined,{weekday:"short",month:"short",day:"numeric"}),
+    short: new Date(d.day + "T00:00:00Z").toLocaleDateString(undefined,{month:"numeric",day:"numeric"}),
+    a: d.added, b: d.taken
+  })), { aria:"Vault value added and withdrawn per day" });
+
+  $("#vaultTable").innerHTML =
+    `<thead><tr><th>Member</th><th>Added</th><th>Withdrawn</th><th>Net</th><th>Items in</th><th>Actions</th><th>Last</th></tr></thead>
+     <tbody>${v.members.map(m => `<tr>
+       <td>${esc(m.name)}</td>
+       <td class="pos">${gold(m.inValue)}</td>
+       <td class="${m.outValue ? "neg" : "dim"}">${gold(m.outValue)}</td>
+       <td class="${m.net >= 0 ? "pos" : "neg"}">${m.net >= 0 ? "+" : "−"}${gold(Math.abs(m.net))}</td>
+       <td>${num(m.inQty)}</td><td>${num(m.actions)}</td>
+       <td class="dim">${dateShort(m.last)}</td></tr>`).join("")}</tbody>`;
+
+  $("#itemTable").innerHTML =
+    `<thead><tr><th>Item</th><th>Unit price</th><th>Deposited</th><th>Withdrawn</th><th>Value moved</th></tr></thead>
+     <tbody>${v.items.slice(0,60).map(it => `<tr>
+       <td>${esc(it.name)}${it.priced ? "" : ' <span class="pill off">unpriced</span>'}</td>
+       <td>${it.unit ? num(it.unit) : "—"}</td>
+       <td>${num(it.inQty)}</td><td>${num(it.outQty)}</td>
+       <td>${gold(it.value)}</td></tr>`).join("")}</tbody>`;
+}
+
+/* =====================================================================
+   Render — Activity log
+   ===================================================================== */
+function renderLog(){
+  const kind = $("#logFilter").value, who = $("#logMember").value;
+  const rows = state.logs.filter(l =>
+    (who ? l.memberUsername === who : true) &&
+    (kind === "all" ? true : classifyLog(l.message || "") === kind));
+  $("#logCount").textContent = `${rows.length} entries`;
+  $("#logFeed").innerHTML = rows.length ? rows.slice(0,600).map(l => {
+    const k = classifyLog(l.message || "");
+    const color = k === "vault" ? C1 : k === "upgrade" ? "#c98500" : k === "quest" ? "#199e70" : "var(--text-muted)";
+    return `<div class="ev">
+      <span class="t">${new Date(l.timestamp).toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}</span>
+      <span class="m">${esc(l.message)}</span>
+      <span class="pill off" style="color:${color}">${k}</span></div>`;
+  }).join("") : '<div class="empty">No matching log entries.</div>';
+}
+
+/* =====================================================================
+   Wiring
+   ===================================================================== */
+function renderAll(){
+  renderOverview(); renderRoster(); renderRace(); renderVault();
+  if (typeof renderExtras === "function") renderExtras();
+  const sel = $("#logMember"), cur = sel.value;
+  sel.innerHTML = '<option value="">All members</option>' +
+    state.members.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join("");
+  sel.value = cur;
+  renderLog();
+}
+
+function initControls(){
+  $$("nav.tabs button").forEach(b => b.onclick = () => {
+    $$("nav.tabs button").forEach(x => x.setAttribute("aria-selected", String(x === b)));
+    $$("section.view").forEach(s => s.hidden = s.id !== "view-" + b.dataset.view);
+    hideTip();
+  });
+
+  const skillOpts = '<option value="">— no skill column —</option>' +
+    SKILLS.map(s => `<option value="${s.key}">${s.label}</option>`).join("");
+  $("#rosterSkill").innerHTML = skillOpts;
+  $("#raceSkill").innerHTML = '<option value="">All skills</option>' +
+    SKILLS.map(s => `<option value="${s.key}">${s.label}</option>`).join("");
+
+  $("#rosterSkill").onchange = e => { rosterSkillKey = e.target.value; renderRoster(); };
+  $("#rosterSearch").oninput = () => renderRoster();
+  $("#raceSkill").onchange = e => { raceSkill = e.target.value; renderRace(); };
+  $$("#raceRange button").forEach(b => b.onclick = () => {
+    raceHours = +b.dataset.h;
+    $$("#raceRange button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+    renderRace();
+  });
+  $$("#tlMode button").forEach(b => b.onclick = () => {
+    tlMode = b.dataset.m;
+    $$("#tlMode button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+    renderTimeline();
+  });
+  $("#logFilter").onchange = renderLog;
+  $("#logMember").onchange = renderLog;
+  $("#refreshBtn").onclick = () => loadAll();
+  window.addEventListener("scroll", hideTip, { passive:true });
+}
+</script>
+<script>
+"use strict";
+
+/* =====================================================================
+   Clan Cup, rankings, rivals, live presence, member timelines, history.
+   ===================================================================== */
+
+const CUP_GAMEMODE  = "default";
+const BOARD_LIMIT   = 200;     // how deep to look for Overkill on leaderboards
+const HISTORY_URL   = "./data/history.json";
+
+Object.assign(state, {
+  cup:null, board:null, worldRank:null, presence:null, history:null,
+  skillRanks:null, skillRanksLoading:false,
+  rivals:[], rivalInfo:new Map(), memberTimelines:new Map()
+});
+
+/* --------------------------------------------------------------------- */
+/* Formatting                                                            */
+/* --------------------------------------------------------------------- */
+const SMALL_WORDS = new Set(["of","the","and","a","in"]);
+
+/** "ReckoningOfTheGodsCompletions" -> "Reckoning of the Gods Completions" */
+function objectiveLabel(raw){
+  return String(raw)
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(" ")
+    .map((w,i) => i && SMALL_WORDS.has(w.toLowerCase()) ? w.toLowerCase() : w)
+    .join(" ");
+}
+
+/** milliseconds -> "12.9s" / "8:37.6" */
+function duration(ms){
+  if (!(ms > 0)) return "—";
+  const s = ms / 1000;
+  if (s < 60) return s.toFixed(1) + "s";
+  const m = Math.floor(s / 60);
+  return `${m}:${(s - m*60).toFixed(1).padStart(4,"0")}`;
+}
+
+function rankBadge(rank){
+  if (rank == null) return '<span class="rk">—</span>';
+  const cls = rank === 1 ? "g1" : rank <= 3 ? "g1" : rank <= 10 ? "g2" : rank <= 50 ? "g3" : "";
+  return `<span class="rk ${cls}">#${num(rank)}</span>`;
+}
+function ordinal(n){
+  const s = ["th","st","nd","rd"], v = n % 100;
+  return n + (s[(v-20)%10] || s[v] || s[0]);
+}
+
+/* --------------------------------------------------------------------- */
+/* Loading                                                               */
+/* --------------------------------------------------------------------- */
+async function loadExtras(){
+  const names = state.members.map(m => m.name);
+  const [cup, board, presence, history] = await Promise.all([
+    api(`/api/ClanCup/standings/${encodeURIComponent(CLAN)}?gameMode=${CUP_GAMEMODE}`, { optional:true }),
+    api(`/api/Clan/experience/top?hours=168&limit=${BOARD_LIMIT}`, { optional:true }),
+    loadPresence(names),
+    loadHistory()
+  ]);
+
+  state.cup = Array.isArray(cup) ? cup : null;
+  state.board = Array.isArray(board) ? board : null;
+  state.presence = presence;
+  state.history = history;
+
+  if (state.board){
+    const i = state.board.findIndex(c => (c.clanName || "").toLowerCase() === CLAN.toLowerCase());
+    state.worldRank = i >= 0 ? i + 1 : null;
+  }
+  state.skillRanks = null;   // invalidate; the Rankings tab refetches on demand
+}
+
+async function loadPresence(names){
+  if (!names.length) return null;
+  const qs = names.map(n => "usernames=" + encodeURIComponent(n)).join("&");
+  const data = await api(`/api/Player/activities?${qs}`, { optional:true });
+  return (data && typeof data === "object") ? data : null;
+}
+
+/* History is an optional sidecar written by the daily snapshot job.
+   A standalone copy of this file simply won't find it — that's fine. */
+async function loadHistory(){
+  // A page opened straight from disk can't fetch a sibling file — the browser
+  // blocks it and logs a CORS error. Skip the probe rather than make noise.
+  if (location.protocol === "file:") return null;
+  try {
+    const res = await fetch(HISTORY_URL, { cache:"no-store" });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return (data && Array.isArray(data.snapshots) && data.snapshots.length) ? data : null;
+  } catch { return null; }
+}
+
+async function loadSkillRanks(){
+  if (state.skillRanks || state.skillRanksLoading) return;
+  state.skillRanksLoading = true;
+  $("#rankHint").textContent = "Checking every skill leaderboard…";
+  const rows = await pooled(SKILLS, async s => {
+    const wire = s.wire || s.label;
+    const board = await api(`/api/Clan/experience/top/${encodeURIComponent(wire)}?hours=168&limit=${BOARD_LIMIT}`, { optional:true });
+    if (!Array.isArray(board)) return { label:s.label, rank:null };
+    const mine = board.find(c => (c.clanName || "").toLowerCase() === CLAN.toLowerCase());
+    const top = board[0];
+    return {
+      label: s.label,
+      rank: mine ? mine.rank : null,
+      experience: mine ? mine.experience : 0,
+      contributors: mine ? mine.contributorCount : 0,
+      leader: top ? top.clanName : null,
+      leaderXp: top ? top.experience : 0,
+      depth: board.length
+    };
+  }, 4);
+  state.skillRanks = rows.filter(Boolean);
+  state.skillRanksLoading = false;
+  renderRanks();
+}
+
+async function loadRival(name){
+  if (state.rivalInfo.has(name)) return;
+  const info = await api(`/api/Clan/recruitment/${encodeURIComponent(name)}`, { optional:true });
+  state.rivalInfo.set(name, info || null);
+}
+
+async function loadMemberTimeline(name){
+  const host = $("#memberChart");
+  if (!host) return;
+  if (state.memberTimelines.has(name)) return drawMemberTimeline(name);
+  host.innerHTML = '<div class="skel" style="height:120px"></div>';
+  const data = await api(`/api/Clan/${encodeURIComponent(CLAN)}/experience/player/${encodeURIComponent(name)}?hours=168`, { optional:true });
+  state.memberTimelines.set(name, data || null);
+  // Guard against a slow response landing after the user clicked someone else.
+  if ($("#memberName").textContent === name) drawMemberTimeline(name);
+}
+
+function drawMemberTimeline(name){
+  const host = $("#memberChart");
+  const data = state.memberTimelines.get(name);
+  const rows = (data && Array.isArray(data.timeline)) ? data.timeline : [];
+  const pts = rows
+    .map(t => ({ x:new Date(t.timestamp), y:Number(t.totalExperience||0), meta:null }))
+    .filter(p => !isNaN(p.x))
+    .sort((a,b) => a.x - b.x);
+  if (!pts.length){
+    host.innerHTML = '<div class="empty">No experience recorded for this member in the last 7 days.</div>';
+    return;
+  }
+  pts.forEach((p,i) => { p.gap = i ? (p.x - pts[i-1].x)/3600e3 : null; });
+  areaChart(host, pts, { aria:`${name} experience over the last seven days` });
+}
+
+/* --------------------------------------------------------------------- */
+/* Render — trophies on the Overview                                      */
+/* --------------------------------------------------------------------- */
+function renderTrophies(){
+  const host = $("#ovTrophies");
+  if (!state.cup){ host.innerHTML = ""; return; }
+  const best = [...state.cup].filter(o => o.rank).sort((a,b) => a.rank - b.rank).slice(0,4);
+  if (!best.length){ host.innerHTML = ""; return; }
+  host.innerHTML = `<div class="trophies">${best.map(o => `
+    <div class="trophy ${o.rank <= 3 ? "" : "blue"}">
+      <div class="p">${o.rank === 1 ? "World #1" : ordinal(o.rank) + " in the world"}</div>
+      <div class="o">${esc(objectiveLabel(o.objective))}</div>
+      <div class="s">${o.bestTime ? duration(o.bestTime.time) : num(o.score) + " points"}</div>
+    </div>`).join("")}</div>`;
+}
+
+/* --------------------------------------------------------------------- */
+/* Render — Clan Cup                                                      */
+/* --------------------------------------------------------------------- */
+const cupSort = { table:"score", key:"rank", dir:1 };
+
+function renderCup(){
+  if (!state.cup){
+    $("#cupTiles").innerHTML = "";
+    $("#cupPodium").innerHTML = '<div class="empty">Clan Cup standings are unavailable right now.</div>';
+    $("#cupScoreTable").innerHTML = ""; $("#cupTimeTable").innerHTML = ""; $("#cupWeak").innerHTML = "";
+    return;
+  }
+  const all = state.cup.filter(o => o.rank != null);
+  const scored = all.filter(o => !o.bestTime);
+  const timed  = all.filter(o => o.bestTime);
+  const best = [...all].sort((a,b) => a.rank - b.rank);
+  const top10 = all.filter(o => o.rank <= 10).length;
+  const top50 = all.filter(o => o.rank <= 50).length;
+  const median = best.length ? best[Math.floor(best.length/2)].rank : null;
+
+  $("#cupTiles").innerHTML = [
+    tile("Best placing", best[0] ? "#" + best[0].rank : "—", best[0] ? objectiveLabel(best[0].objective) : ""),
+    tile("Top 10 finishes", num(top10), `${top50} inside the top 50`),
+    tile("Objectives scored", num(all.length), `${timed.length} of them speed runs`),
+    tile("Median rank", median ? "#" + num(median) : "—", "across every objective")
+  ].join("");
+
+  const podium = best.filter(o => o.rank <= 25);
+  $("#cupPodium").innerHTML = podium.length ? `<div class="chips">${podium.map(o =>
+    `<span class="chip">${rankBadge(o.rank)}<b>${esc(objectiveLabel(o.objective))}</b>
+      <span class="dim">${o.bestTime ? duration(o.bestTime.time) : abbr(o.score)}</span></span>`).join("")}</div>`
+    : '<div class="empty">No top-25 placings this cup yet.</div>';
+
+  cupTable("#cupScoreTable", scored, "score");
+  cupTable("#cupTimeTable", timed, "time");
+
+  const weak = [...all].sort((a,b) => b.rank - a.rank).slice(0,8);
+  barList($("#cupWeak"), weak.map(o => ({
+    label: objectiveLabel(o.objective),
+    value: o.rank,
+    display: "#" + num(o.rank),
+    color: C2
+  })));
+}
+
+function cupTable(sel, rows, kind){
+  const cols = kind === "score"
+    ? [ { key:"objective", label:"Objective", get:o => objectiveLabel(o.objective), cell:o => esc(objectiveLabel(o.objective)) },
+        { key:"score",     label:"Score",     get:o => o.score || 0, cell:o => num(o.score) },
+        { key:"rank",      label:"World rank",get:o => o.rank,       cell:o => rankBadge(o.rank) } ]
+    : [ { key:"objective", label:"Objective", get:o => objectiveLabel(o.objective), cell:o => esc(objectiveLabel(o.objective)) },
+        { key:"time",      label:"Best time", get:o => o.bestTime.time, cell:o => duration(o.bestTime.time) },
+        { key:"when",      label:"Set",       get:o => -new Date(o.bestTime.achievedAt), cell:o => dateShort(o.bestTime.achievedAt) },
+        { key:"rank",      label:"World rank",get:o => o.rank,       cell:o => rankBadge(o.rank) } ];
+
+  const active = cupSort.table === kind ? cupSort : { key:"rank", dir:1 };
+  const col = cols.find(c => c.key === active.key) || cols[cols.length-1];
+  const sorted = [...rows].sort((a,b) => {
+    const av = col.get(a), bv = col.get(b);
+    if (typeof av === "string" || typeof bv === "string") return active.dir * String(av).localeCompare(String(bv));
+    return active.dir * ((av||0) - (bv||0));
+  });
+
+  $(sel).innerHTML =
+    `<thead><tr>${cols.map(c => `<th data-k="${c.key}">${c.label}${
+      active.key === c.key ? `<span class="ar">${active.dir === 1 ? "▲" : "▼"}</span>` : ""}</th>`).join("")}</tr></thead>
+     <tbody>${sorted.map(o => `<tr>${cols.map(c => `<td>${c.cell(o)}</td>`).join("")}</tr>`).join("")}</tbody>`;
+
+  $$(sel + " thead th").forEach(th => th.onclick = () => {
+    const k = th.dataset.k;
+    if (cupSort.table === kind && cupSort.key === k) cupSort.dir *= -1;
+    else { cupSort.table = kind; cupSort.key = k; cupSort.dir = k === "objective" ? 1 : 1; }
+    renderCup();
+  });
+}
+
+/* --------------------------------------------------------------------- */
+/* Render — Rankings & rivals                                             */
+/* --------------------------------------------------------------------- */
+function renderRanks(){
+  const board = state.board;
+  const mine = board && state.worldRank ? board[state.worldRank - 1] : null;
+  const leader = board && board[0];
+  const gap = (mine && leader) ? leader.totalExperience - mine.totalExperience : 0;
+  const ahead = (board && state.worldRank > 1) ? board[state.worldRank - 2] : null;
+
+  $("#rankTiles").innerHTML = [
+    tile("Weekly xp rank", state.worldRank ? "#" + state.worldRank : "outside top " + BOARD_LIMIT,
+         board ? `of ${board.length} clans · not your in-game clan rank` : ""),
+    tile("Clan xp · 7 days", mine ? abbr(mine.totalExperience) : "—",
+         leader ? `leader ${esc(leader.clanName)} at ${abbr(leader.totalExperience)}` : ""),
+    tile("Gap to first", gap ? abbr(gap) : "—", gap && mine ? `${(leader.totalExperience/mine.totalExperience).toFixed(1)}× our weekly total` : ""),
+    tile("Next clan up", ahead ? esc(ahead.clanName) : "—",
+         ahead && mine ? `${abbr(ahead.totalExperience - mine.totalExperience)} xp ahead` : "", "sm")
+  ].join("");
+
+  if (!state.skillRanks){
+    $("#rankSkills").innerHTML = state.skillRanksLoading
+      ? '<div class="skel" style="height:14px;margin:8px 0"></div>'.repeat(8)
+      : '<div class="empty">Open this tab to load per-skill rankings.</div>';
+  } else {
+    const rows = [...state.skillRanks].sort((a,b) => (a.rank ?? 9e9) - (b.rank ?? 9e9));
+    const best = rows.filter(r => r.rank).length;
+    $("#rankHint").textContent =
+      `Placement among all clans for experience earned in the last 7 days · ranked in ${best} of ${rows.length} skills` +
+      ` · outside the top ${BOARD_LIMIT} counts as unranked`;
+    $("#rankSkills").innerHTML =
+      `<div class="tbl-scroll"><table>
+        <thead><tr><th>Skill</th><th>World rank</th><th>Our xp</th><th>Contributors</th><th>Leader</th></tr></thead>
+        <tbody>${rows.map(r => `<tr>
+          <td>${esc(r.label)}</td>
+          <td>${r.rank ? rankBadge(r.rank) : `<span class="dim">&gt;${BOARD_LIMIT}</span>`}</td>
+          <td>${r.experience ? abbr(r.experience) : '<span class="dim">—</span>'}</td>
+          <td>${r.contributors ? num(r.contributors) : '<span class="dim">—</span>'}</td>
+          <td class="dim">${r.leader ? esc(r.leader) + " · " + abbr(r.leaderXp) : "—"}</td>
+        </tr>`).join("")}</tbody></table></div>`;
+  }
+
+  renderRivals();
+}
+
+function renderRivals(){
+  const board = state.board;
+  const sel = $("#rivalPick");
+  if (board && sel.options.length <= 1){
+    sel.innerHTML = '<option value="">Add a clan…</option>' +
+      board.slice(0, 60).filter(c => (c.clanName||"").toLowerCase() !== CLAN.toLowerCase())
+           .map((c,i) => `<option value="${esc(c.clanName)}">#${board.indexOf(c)+1} ${esc(c.clanName)} — ${abbr(c.totalExperience)}</option>`).join("");
+  }
+
+  const mineEntry = board && state.worldRank ? board[state.worldRank - 1] : null;
+  const picks = [CLAN, ...state.rivals];
+  const rows = picks.map(name => {
+    const e = board && board.find(c => (c.clanName||"").toLowerCase() === name.toLowerCase());
+    const info = state.rivalInfo.get(name);
+    const members = name.toLowerCase() === CLAN.toLowerCase()
+      ? state.members.length
+      : (info && info.memberlist ? info.memberlist.length : null);
+    const rank = board && e ? board.indexOf(e) + 1 : null;
+    return {
+      name, rank,
+      xp: e ? e.totalExperience : 0,
+      members,
+      perMember: (e && members) ? e.totalExperience / members : 0,
+      activity: name.toLowerCase() === CLAN.toLowerCase()
+        ? (state.clan ? state.clan.activityScore : null)
+        : (info ? info.activityScore : null),
+      isMine: name.toLowerCase() === CLAN.toLowerCase()
+    };
+  });
+
+  $("#rivalTable").innerHTML =
+    `<thead><tr><th>Clan</th><th>World rank</th><th>7d xp</th><th>Members</th><th>Xp per member</th><th>Activity</th><th></th></tr></thead>
+     <tbody>${rows.map(r => `<tr>
+       <td>${esc(r.name)}${r.isMine ? ' <span class="pill deputy">us</span>' : ""}</td>
+       <td>${r.rank ? rankBadge(r.rank) : '<span class="dim">—</span>'}</td>
+       <td>${r.xp ? abbr(r.xp) : '<span class="dim">—</span>'}</td>
+       <td>${r.members != null ? num(r.members) : '<span class="dim">—</span>'}</td>
+       <td>${r.perMember ? abbr(r.perMember) : '<span class="dim">—</span>'}</td>
+       <td>${r.activity != null ? r.activity.toFixed(1) : '<span class="dim">—</span>'}</td>
+       <td>${r.isMine ? "" : `<span class="x" data-drop="${esc(r.name)}" style="cursor:pointer;color:var(--text-muted)">remove</span>`}</td>
+     </tr>`).join("")}</tbody>`;
+
+  $$("#rivalTable [data-drop]").forEach(el => el.onclick = () => {
+    state.rivals = state.rivals.filter(n => n !== el.dataset.drop);
+    renderRivals();
+  });
+
+  if (rows.length > 1 && mineEntry){
+    barList($("#rivalBars"), rows.filter(r => r.xp).sort((a,b) => b.xp - a.xp).map(r => ({
+      label: r.name, value: r.xp, display: abbr(r.xp), color: r.isMine ? C1 : "#4a4a45"
+    })));
+  } else {
+    $("#rivalBars").innerHTML = "";
+  }
+}
+
+/* --------------------------------------------------------------------- */
+/* Render — live presence                                                 */
+/* --------------------------------------------------------------------- */
+function renderPresence(){
+  const panel = $("#presencePanel");
+  const p = state.presence;
+  if (!p){ panel.hidden = true; return; }
+  const online = Object.keys(p).filter(n => state.byName.has(n));
+  if (!online.length){ panel.hidden = true; return; }
+  panel.hidden = false;
+  $("#presenceHint").textContent =
+    `${online.length} of ${state.members.length} members active right now · last task shown from their most recent logout`;
+  $("#presenceList").innerHTML = `<div class="chips">${online.map(n => {
+    const m = state.byName.get(n);
+    return `<span class="chip"><span class="live-dot"></span><b>${esc(n)}</b>${
+      m && m.lastTask ? `<span class="dim">${esc(m.lastTask)}</span>` : ""}</span>`;
+  }).join("")}</div>`;
+}
+
+/* --------------------------------------------------------------------- */
+/* Render — Trends (only when a history sidecar exists)                   */
+/* --------------------------------------------------------------------- */
+function renderTrends(){
+  const h = state.history;
+  $("#tabTrends").hidden = !h;
+  if (!h) return;
+
+  const snaps = [...h.snapshots].sort((a,b) => a.date < b.date ? -1 : 1);
+  const first = snaps[0], last = snaps[snaps.length-1];
+  const xpDelta = (last.clanXp7d || 0) - (first.clanXp7d || 0);
+  const rankDelta = (first.worldRank && last.worldRank) ? first.worldRank - last.worldRank : null;
+
+  $("#trendTiles").innerHTML = [
+    tile("Snapshots on record", num(snaps.length), `since ${dateShort(first.date)}`),
+    tile("Weekly xp now", abbr(last.clanXp7d || 0),
+         xpDelta ? `${xpDelta > 0 ? "+" : "−"}${abbr(Math.abs(xpDelta))} since the first` : ""),
+    tile("World rank now", last.worldRank ? "#" + last.worldRank : "—",
+         rankDelta ? `${rankDelta > 0 ? "up" : "down"} ${Math.abs(rankDelta)} place${Math.abs(rankDelta)===1?"":"s"}` : ""),
+    tile("Members now", num((last.members || []).length), `${(first.members||[]).length} at the start`)
+  ].join("");
+
+  areaChart($("#chartHistXp"),
+    snaps.filter(s => s.clanXp7d).map(s => ({ x:new Date(s.date), y:s.clanXp7d, meta:null })),
+    { aria:"Weekly clan experience over time" });
+
+  areaChart($("#chartHistRank"),
+    snaps.filter(s => s.worldRank).map(s => ({ x:new Date(s.date), y:s.worldRank, meta:null })),
+    { aria:"World rank over time", invert:true, unit:"in the world",
+      fmt: v => "#" + Math.round(v), tipFmt: v => "#" + Math.round(v) });
+
+  const firstBy = new Map((first.members || []).map(m => [m.name, m]));
+  const rows = (last.members || []).map(m => {
+    const f = firstBy.get(m.name);
+    return {
+      name: m.name,
+      level: m.totalLevel,
+      levelGain: f ? m.totalLevel - f.totalLevel : null,
+      xpGain: f ? (m.totalXp || 0) - (f.totalXp || 0) : null,
+      isNew: !f
+    };
+  }).sort((a,b) => (b.xpGain ?? -1) - (a.xpGain ?? -1));
+
+  $("#trendMembers").innerHTML =
+    `<thead><tr><th>Member</th><th>Total level</th><th>Levels gained</th><th>Xp gained</th></tr></thead>
+     <tbody>${rows.map(r => `<tr>
+       <td>${esc(r.name)}${r.isNew ? ' <span class="pill on">new</span>' : ""}</td>
+       <td>${num(r.level)}</td>
+       <td>${r.levelGain == null ? '<span class="dim">—</span>' : r.levelGain > 0 ? `<span class="pos">+${r.levelGain}</span>` : '<span class="dim">0</span>'}</td>
+       <td>${r.xpGain == null ? '<span class="dim">—</span>' : r.xpGain > 0 ? `<span class="pos">${abbr(r.xpGain)}</span>` : '<span class="dim">—</span>'}</td>
+     </tr>`).join("")}</tbody>`;
+}
+
+/* --------------------------------------------------------------------- */
+/* Hook called by renderAll()                                             */
+/* --------------------------------------------------------------------- */
+function renderExtras(){
+  renderTrophies();
+  renderPresence();
+  renderCup();
+  renderRanks();
+  renderTrends();
+  addWorldRankTile();
+}
+
+/* Slip a world-rank tile into the Overview tile row. */
+function addWorldRankTile(){
+  if (state.worldRank == null || !state.board) return;
+  const host = $("#ovTiles");
+  if (host.querySelector("[data-world]")) return;
+  const el = document.createElement("div");
+  el.className = "tile";
+  el.dataset.world = "1";
+  el.innerHTML = `<div class="k">Weekly xp rank</div><div class="v">#${state.worldRank}</div>
+                  <div class="m">by xp earned in 7 days</div>`;
+  host.insertBefore(el, host.children[1] || null);
+}
+
+function initExtras(){
+  $$("nav.tabs button").forEach(b => b.addEventListener("click", () => {
+    if (b.dataset.view === "ranks") loadSkillRanks();
+  }));
+  $("#rivalPick").onchange = async e => {
+    const name = e.target.value;
+    e.target.value = "";
+    if (!name || state.rivals.includes(name) || state.rivals.length >= 5) return;
+    state.rivals.push(name);
+    renderRivals();
+    await loadRival(name);
+    renderRivals();
+  };
+  $("#rivalClear").onclick = () => { state.rivals = []; renderRivals(); };
+}
+</script>
+<script>
+"use strict";
+initControls();
+initExtras();
+loadAll();
+setInterval(loadAll, REFRESH_MS);
+</script>
+</body>
+</html>
