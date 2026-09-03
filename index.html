@@ -224,6 +224,21 @@ input[type="search"]{min-width:180px}
 .up{background:var(--surface-2);border:1px solid var(--border-soft);border-radius:6px;
   padding:3px 8px;font-size:11.5px;color:var(--text-secondary)}
 .up b{color:var(--text-primary)}
+.up .of{color:var(--text-muted);font-size:10.5px}
+/* Owned-and-finished, part-way, and not-taken read differently at a glance. */
+.up.done{background:#199e7018;border-color:#199e7040;color:#9ad9bd}
+.up.done b{color:#3fc294}
+.up.part{background:#c9850016;border-color:#c9850038;color:#dcc79a}
+.up.part b{color:#e0a52e}
+.up.miss{background:transparent;border-style:dashed;border-color:var(--border);
+  color:var(--text-muted)}
+.upsec{margin-top:12px}
+.upsec:first-of-type{margin-top:0}
+.uph{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);
+  font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:8px}
+.uph .n{background:var(--surface-3);border-radius:999px;padding:0 7px;font-size:10.5px;
+  letter-spacing:0;color:var(--text-secondary)}
+.uph .note{text-transform:none;letter-spacing:0;font-weight:400;font-size:10.5px;opacity:.75}
 .skillgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:6px}
 .sk{background:var(--surface-2);border:1px solid var(--border-soft);border-radius:8px;padding:7px 9px}
 .sk .n{font-size:11px;color:var(--text-muted)}
@@ -1514,12 +1529,112 @@ function renderMemberDetail(m){
          <a href="#" data-goto="cup">Clan Cup tab</a></div>`
     : '<div class="empty" style="padding:10px 0">No boss kills recorded.</div>';
 
-  const ups = Object.entries((prof && prof.upgrades) || {})
-    .filter(([,v]) => v > 0).sort((a,b) => b[1] - a[1]);
-  $("#memberUpgrades").innerHTML = ups.length
-    ? `<div class="chipwrap">${ups.map(([k,v]) =>
-        `<span class="up">${esc(spaceCase(k))} <b>${num(v)}</b></span>`).join("")}</div>`
-    : '<div class="empty" style="padding:10px 0">No upgrades reported.</div>';
+  renderUpgrades(prof);
+}
+
+/* =====================================================================
+   Upgrades
+   A bare "1" is meaningless without knowing the ceiling: for some upgrades it
+   means finished, for others it means one of eight. The optional upgrades.json
+   sidecar supplies the maximum, which turns the list into owned / part-done /
+   not taken. Without it we still tidy the names and hide the noisy "1"s.
+   ===================================================================== */
+
+/** "keepItSpacious" and "Upgrade_bloodmoon_preparation" -> one comparable id. */
+function upgradeKey(raw){
+  return String(raw || "")
+    .replace(/^upgrade[_\s-]*/i, "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+function upgradeTitle(raw){
+  const w = String(raw || "")
+    .replace(/^upgrade[_\s-]*/i, "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ").trim().toLowerCase();
+  return w ? w[0].toUpperCase() + w.slice(1) : "";
+}
+
+async function loadUpgradeCatalog(){
+  if (state.upgradeCat !== undefined) return state.upgradeCat;
+  state.upgradeCat = null;
+  if (location.protocol === "file:") return null;
+  try {
+    const res = await fetch("./data/upgrades.json", { cache:"no-store" });
+    if (res.ok){
+      const doc = await res.json();
+      if (doc && doc.upgrades && Object.keys(doc.upgrades).length) state.upgradeCat = doc.upgrades;
+    }
+  } catch { /* sidecar not built yet */ }
+  return state.upgradeCat;
+}
+
+const upChip = (name, level, max) => {
+  const done = max != null && level >= max;
+  const cls  = level <= 0 ? "up miss" : done ? "up done" : "up part";
+  const val  = max == null
+    ? (level > 1 ? ` <b>${num(level)}</b>` : "")            // no ceiling known
+    : max === 1
+      ? ""                                                  // owned / not owned
+      : ` <b>${num(level)}</b><span class="of">/${num(max)}</span>`;
+  return `<span class="${cls}">${esc(name)}${val}</span>`;
+};
+
+async function renderUpgrades(prof){
+  const host = $("#memberUpgrades");
+  const raw  = (prof && prof.upgrades) || {};
+  const held = new Map();
+  for (const [k, v] of Object.entries(raw)) if (v > 0) held.set(upgradeKey(k), { raw:k, level:Number(v) });
+
+  const cat = await loadUpgradeCatalog();
+
+  if (!cat){
+    // No catalogue: names tidied, bare "1"s dropped, nothing invented.
+    const rows = [...held.values()].sort((a, b) => b.level - a.level);
+    host.innerHTML = rows.length
+      ? `<div class="chipwrap">${rows.map(r =>
+          upChip(upgradeTitle(r.raw), r.level, null)).join("")}</div>
+         <div class="hint" style="margin:8px 0 0">${rows.length} upgrades owned.
+           Levels and what's still missing appear once the upgrade list is built.</div>`
+      : '<div class="empty" style="padding:10px 0">No upgrades reported.</div>';
+    return;
+  }
+
+  const done = [], part = [], miss = [];
+  for (const [id, def] of Object.entries(cat)){
+    const have = held.get(id);
+    const lvl  = have ? have.level : 0;
+    const max  = def.max ?? null;
+    const row  = { name: def.name || upgradeTitle(id), lvl, max };
+    if (lvl <= 0) miss.push(row);
+    else if (max != null && lvl >= max) done.push(row);
+    else part.push(row);
+    held.delete(id);
+  }
+  // Anything the player has that the game data doesn't list — surfaced, not dropped.
+  const extra = [...held.values()].map(r => ({ name: upgradeTitle(r.raw), lvl:r.level, max:null }));
+
+  const byGap = (a, b) => (b.max ? b.lvl / b.max : 0) - (a.max ? a.lvl / a.max : 0);
+  part.sort(byGap);
+  done.sort((a, b) => a.name.localeCompare(b.name));
+  miss.sort((a, b) => a.name.localeCompare(b.name));
+
+  const section = (title, rows, note) => rows.length ? `
+    <div class="upsec">
+      <div class="uph">${title} <span class="n">${num(rows.length)}</span>${
+        note ? `<span class="note">${note}</span>` : ""}</div>
+      <div class="chipwrap">${rows.map(r => upChip(r.name, r.lvl, r.max)).join("")}</div>
+    </div>` : "";
+
+  const ownedCount = done.length + part.length + extra.length;
+  host.innerHTML =
+    `<div class="hint" style="margin:0 0 10px">${num(ownedCount)} of ${
+      num(Object.keys(cat).length)} upgrades owned · ${num(done.length)} fully levelled · ${
+      num(miss.length)} not taken yet</div>` +
+    section("Still levelling", part, "closest to finished first") +
+    section("Finished", done) +
+    section("Not taken", miss) +
+    section("Not in the game data", extra, "reported by the profile but unlisted");
 }
 
 /* =====================================================================
