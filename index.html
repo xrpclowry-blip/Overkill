@@ -24,6 +24,11 @@
   --good:#199e70;
   --warn:#c98500;
   --bad:#e66767;
+  /* Skill-progress stages. Brighter than the chart series because these are
+     3px bars on a dark card — the muted series colours vanish at that weight. */
+  --prog-pre:#2fb37f;
+  --prog-post:#e0a92e;
+  --prog-cap:#e66767;
   --radius:10px;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
   --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,Helvetica,Arial,sans-serif;
@@ -224,6 +229,24 @@ input[type="search"]{min-width:180px}
 .sk .n{font-size:11px;color:var(--text-muted)}
 .sk .l{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}
 .sk .x{font-size:10.5px;color:var(--text-muted);font-variant-numeric:tabular-nums}
+
+/* Two finish lines per skill: level 120, then the 500M xp cap. The bar resets
+   and changes colour at 120 so the second climb is visible at all. */
+.sk .track{height:3px;margin-top:5px;background:#ffffff0f;border-radius:2px;overflow:hidden}
+.sk .fill{height:100%;border-radius:2px;transition:width .3s ease}
+/* A skill freshly at 120 is ~0.1% into a 411M-xp climb. Without a floor that
+   renders as an invisible sliver, which reads as a bug rather than a start. */
+.sk .fill.has{min-width:3px}
+.fill.pre{background:var(--prog-pre)}
+.fill.post{background:var(--prog-post)}
+.fill.cap{background:var(--prog-cap)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:9px;
+  font-size:10.5px;color:var(--text-muted)}
+.legend .lg{display:inline-flex;align-items:center;gap:6px}
+.legend i{width:14px;height:3px;border-radius:2px;display:inline-block}
+.legend i.pre{background:var(--prog-pre)}
+.legend i.post{background:var(--prog-post)}
+.legend i.cap{background:var(--prog-cap)}
 /* rank badges + trophies */
 .rk{
   display:inline-block;min-width:34px;text-align:center;font-variant-numeric:tabular-nums;
@@ -383,6 +406,7 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
 
       <div class="sect">Skills</div>
       <div class="skillgrid" id="memberSkills"></div>
+      <div class="legend" id="skillLegend"></div>
 
       <div class="sect" style="margin-top:16px">Upgrades</div>
       <div id="memberUpgrades"></div>
@@ -669,6 +693,23 @@ function progressInLevel(xp){
   if (lv >= MAX_LEVEL) return 1;
   const a = XP_TABLE[lv - 1], b = XP_TABLE[lv];
   return Math.max(0, Math.min(1, (xp - a) / (b - a)));
+}
+
+/* A skill has two finish lines, not one: level 120, and then the 500M
+   experience cap a long way past it. One bar that resets at 120 shows both —
+   otherwise every maxed skill sits at 100% and the grind after it is invisible. */
+const XP_120 = XP_TABLE[MAX_LEVEL - 1];   // 88,474,739
+const XP_CAP = 500000000;
+
+function skillStage(xp){
+  const x = Math.max(0, Number(xp) || 0);
+  if (x >= XP_CAP)  return { stage:"cap",  pct:1, note:"at the 500M experience cap" };
+  if (x >= XP_120){
+    return { stage:"post", pct:(x - XP_120) / (XP_CAP - XP_120),
+             note:`level 120 — ${abbr(XP_CAP - x)} xp to the 500M cap` };
+  }
+  return { stage:"pre", pct:x / XP_120,
+           note:`${abbr(XP_120 - x)} xp to level 120` };
 }
 
 /* Three names exist for the same skill:
@@ -1339,15 +1380,22 @@ function showMember(name){
     m.joined ? `joined ${dateShort(m.joined)}` : "",
     v ? `vault: ${gold(v.inValue)} in / ${gold(v.outValue)} out` : ""
   ].filter(Boolean).join(" · ");
-  $("#memberSkills").innerHTML = m.skills.map(s => `
-    <div class="sk" title="${esc(s.label)} — ${num(s.xp)} xp">
+  $("#memberSkills").innerHTML = m.skills.map(s => {
+    const st = skillStage(s.xp);
+    return `
+    <div class="sk" title="${esc(s.label)} — ${num(s.xp)} xp · ${st.note}">
       <div class="n">${s.label}</div>
       <div class="l">${m.missing ? "—" : s.level}</div>
       <div class="x">${m.missing ? "" : abbr(s.xp)}</div>
-      <div class="track" style="height:3px;margin-top:5px;background:#ffffff0f;border-radius:2px;overflow:hidden">
-        <div style="height:100%;width:${(s.progress*100).toFixed(1)}%;background:${s.level >= MAX_LEVEL ? "#c98500" : C1}"></div>
-      </div>
-    </div>`).join("");
+      <div class="track"><div class="fill ${st.stage}${
+             st.pct > 0 || st.stage !== "pre" ? " has" : ""}"
+           style="width:${m.missing ? 0 : (st.pct*100).toFixed(1)}%"></div></div>
+    </div>`;
+  }).join("");
+  $("#skillLegend").innerHTML =
+    `<span class="lg"><i class="pre"></i>climbing to 120</span>` +
+    `<span class="lg"><i class="post"></i>120, working toward the 500M xp cap</span>` +
+    `<span class="lg"><i class="cap"></i>capped at 500M</span>`;
   renderMemberDetail(m);
   if (typeof loadMemberTimeline === "function") loadMemberTimeline(name);
   $("#memberPanel").scrollIntoView({ behavior:"smooth", block:"nearest" });
