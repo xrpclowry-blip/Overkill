@@ -134,6 +134,17 @@ tbody td:first-child{color:var(--text-primary);font-weight:500}
 .pill.leader{background:#c9850022;color:#e0a52e;border-color:#c9850055}
 .pill.deputy{background:#3987e522;color:#79b3f2;border-color:#3987e555}
 .pill.on{background:#199e7022;color:#3fc294;border-color:#199e7055}
+.pill.wrank{font-variant-numeric:tabular-nums}
+/* World-rank tiers. Red is the TOP tier here, not a warning — the same
+   language the skill bars use, where red marks a capped skill. */
+.pill.wrank.t100 {background:#e6676722;color:#f08a8a;border-color:#e6676755}
+.pill.wrank.t1k  {background:#c9850022;color:#e0a52e;border-color:#c9850055}
+.pill.wrank.t10k {background:#199e7022;color:#3fc294;border-color:#199e7055}
+.pill.wrank.trest{background:#ffffff0d;color:var(--text-muted);border-color:var(--border)}
+.wr.t100 {color:#f08a8a}
+.wr.t1k  {color:#e0a52e}
+.wr.t10k {color:#3fc294}
+.wr.trest{color:var(--text-muted)}
 .pill.mid{background:#c9850022;color:#e0a52e;border-color:#c9850055}
 .pill.off{background:#ffffff0d;color:var(--text-muted);border-color:var(--border)}
 .pos{color:#3fc294}
@@ -254,7 +265,7 @@ input[type="search"]{min-width:180px}
 .sk .l{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}
 .sk .x{font-size:10.5px;color:var(--text-muted);font-variant-numeric:tabular-nums}
 /* World position, kept quieter than the level so it reads as an aside. */
-.wr{color:var(--accent);font-size:9.5px;margin-left:5px;opacity:.85;font-weight:600}
+.wr{font-size:9.5px;margin-left:5px;opacity:.9;font-weight:600}
 .k2 .wr{margin-left:6px}
 
 /* Two finish lines per skill: level 120, then the 500M xp cap. The bar resets
@@ -1356,7 +1367,8 @@ function renderRoster(){
 
   const cols = [
     { key:"name",        label:"Member",   get:m => m.name, cell:m => `<div class="name-cell"><span>${esc(m.name)}</span>${
-        m.rank === 2 ? '<span class="pill leader">Leader</span>' : m.rank === 1 ? '<span class="pill deputy">Deputy</span>' : ""}</div>` },
+        m.rank === 2 ? '<span class="pill leader">Leader</span>' : m.rank === 1 ? '<span class="pill deputy">Deputy</span>' : ""}${
+        worldRankBadge(m.name)}</div>` },
     { key:"totalLevel",  label:"Total lvl",get:m => m.totalLevel, cell:m => m.missing ? "—" : `<strong>${num(m.totalLevel)}</strong>` },
     { key:"combatLevel", label:"Combat lvls", title:"Sum of the six combat skill levels", get:m => m.combatLevel, cell:m => m.missing ? "—" : num(m.combatLevel) },
     { key:"totalXp",     label:"Total xp", get:m => m.totalXp, cell:m => m.missing ? "—" : abbr(m.totalXp) },
@@ -1435,7 +1447,7 @@ function showMember(name){
       <div class="n">${s.label}</div>
       <div class="l">${m.missing ? "—" : s.level}</div>
       <div class="x">${m.missing ? "" : abbr(s.xp)}${
-        r ? `<span class="wr">#${num(r)}</span>` : ""}</div>
+        r ? `<span class="wr ${rankTier(r).cls}">#${num(r)}</span>` : ""}</div>
       <div class="track"><div class="fill ${st.stage}${
              st.pct > 0 || st.stage !== "pre" ? " has" : ""}"
            style="width:${m.missing ? 0 : (st.pct*100).toFixed(1)}%"></div></div>
@@ -1560,7 +1572,7 @@ function renderMemberDetail(m){
     ? `<div class="kv">${pvm.map(([k,v]) => {
         const r = rankOf(state.playerRanks.get(m.name), lbKey(k));
         return `<div class="k2">${esc(spaceCase(k))}${
-          r ? `<span class="wr">#${num(r)}</span>` : ""}</div>
+          r ? `<span class="wr ${rankTier(r).cls}">#${num(r)}</span>` : ""}</div>
          <div class="v2 ${v >= 1000 ? "strong" : ""}">${num(v)}</div>`; }).join("")}
        </div>
        <div class="hint" style="margin:10px 0 0">${num(totalKills)} lifetime completions
@@ -1631,6 +1643,55 @@ function ticksToDate(ticks){
   const ms = n / 10000 - 62135596800000;
   const d = new Date(ms);
   return isNaN(d) ? null : d;
+}
+
+
+/** The player's own standing among everyone, shown beside their name once the
+    background fetch has reached them. Absent until then rather than a spinner:
+    twenty rows each blinking a placeholder is worse than the badge appearing. */
+/* Tiers, brightest at the top. Red reads as "best" here rather than "bad",
+   matching the skill bars where red marks a capped skill. */
+function rankTier(r){
+  if (r == null) return null;
+  if (r <= 100)   return { cls:"t100",  note:"top 100 in the world" };
+  if (r <= 1000)  return { cls:"t1k",   note:"top 1,000 in the world" };
+  if (r <= 10000) return { cls:"t10k",  note:"top 10,000 in the world" };
+  return { cls:"trest", note:"outside the top 10,000" };
+}
+
+function worldRankBadge(name){
+  const lb = state.playerRanks.get(name);
+  if (!lb || lb === LB_MISS) return "";
+  const r = lb.totalLevelResult && lb.totalLevelResult.rank;
+  if (!r) return "";
+  const t = rankTier(r);
+  return `<span class="pill wrank ${t.cls}" title="World #${num(r)} by total level — ${t.note}">#${num(r)}</span>`;
+}
+
+/* One request per member, so this runs quietly in the background after the
+   dashboard is usable — two at a time, with a pause between. A burst of twenty
+   has rate-limited this API before and taken the member profiles down with it. */
+async function prefetchWorldRanks(){
+  if (state.wrPrefetched) return;
+  state.wrPrefetched = true;
+  await new Promise(r => setTimeout(r, 2500));       // let the page settle first
+  for (const m of state.members){
+    if (state.playerRanks.has(m.name)) continue;
+    await loadPlayerRank(m);
+    patchWorldRankBadge(m.name);
+    await new Promise(r => setTimeout(r, 250));
+  }
+  if (typeof renderWorldRanks === "function") renderWorldRanks();
+}
+
+/** Slot the badge into a row that's already on screen, without re-sorting it. */
+function patchWorldRankBadge(name){
+  const row = $$("#rosterTable tbody tr").find(tr => tr.dataset.n === name);
+  if (!row) return;
+  const cell = row.querySelector(".name-cell");
+  if (!cell || cell.querySelector(".wrank")) return;
+  const html = worldRankBadge(name);
+  if (html) cell.insertAdjacentHTML("beforeend", html);
 }
 
 /* =====================================================================
@@ -3401,7 +3462,7 @@ initControls();
 initExtras();
 initMarket();
 initCreation();
-loadAll();
+loadAll().then(prefetchWorldRanks);
 setInterval(loadAll, REFRESH_MS);
 </script>
 </body>
