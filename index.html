@@ -261,7 +261,20 @@ input[type="search"]{min-width:180px}
 #memberUpgrades.hide-done .upsec.when-all{display:none}
 .skillgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:6px}
 .sk{background:var(--surface-2);border:1px solid var(--border-soft);border-radius:8px;padding:7px 9px}
-.sk .n{font-size:11px;color:var(--text-muted)}
+.sk .n{font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:5px}
+/* Skill icons. image-rendering:pixelated keeps the game's small sprites crisp
+   instead of smearing them when the browser scales them up. */
+.sicon{width:14px;height:14px;flex:0 0 auto;image-rendering:pixelated;vertical-align:-2px}
+.feed{display:grid;gap:1px}
+.fev{display:grid;grid-template-columns:132px 1fr;gap:10px;padding:5px 0;
+  border-bottom:1px solid var(--border-soft);font-size:12.5px;align-items:baseline}
+.fev:last-child{border-bottom:none}
+.fev .t{color:var(--text-muted);font-size:11.5px;font-variant-numeric:tabular-nums}
+.fev .m{color:var(--text-secondary)}
+.fev .m strong{color:var(--text-primary)}
+.barrow .lbl .sicon{margin-right:6px}
+.fev .m .sicon{margin:0 5px 0 2px}
+td .sicon{margin-right:6px}
 .sk .l{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}
 .sk .x{font-size:10.5px;color:var(--text-muted);font-variant-numeric:tabular-nums}
 /* World position, kept quieter than the level so it reads as an aside. */
@@ -379,6 +392,11 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
 
   <!-- OVERVIEW -->
   <section class="view" id="view-overview">
+    <div class="panel" id="feedPanel" style="margin-bottom:14px" hidden>
+      <h2>Clan milestones</h2>
+      <p class="hint" id="feedHint"></p>
+      <div id="feedList"></div>
+    </div>
     <div class="panel" id="presencePanel" style="margin-bottom:14px" hidden>
       <h2>Who's on</h2>
       <p class="hint" id="presenceHint"></p>
@@ -1130,7 +1148,7 @@ function barList(host, rows, opts = {}){
   const max = Math.max(...rows.map(r => r.value)) || 1;
   host.innerHTML = rows.map(r => `
     <div class="barrow">
-      <div class="lbl" title="${esc(r.label)}">${esc(r.label)}</div>
+      <div class="lbl" title="${esc(r.label)}">${r.icon || ""}${esc(r.label)}</div>
       <div class="track"><div class="fill" style="width:${Math.max(1,(r.value/max)*100).toFixed(2)}%;background:${r.color || C1}"></div></div>
       <div class="val">${esc(r.display ?? abbr(r.value))}</div>
     </div>`).join("");
@@ -1444,7 +1462,7 @@ function showMember(name){
     return `
     <div class="sk" title="${esc(s.label)} — ${num(s.xp)} xp · ${st.note}${
       r ? ` · world #${num(r)}` : ""}${capped ? ` · capped ${dateShort(capped.toISOString())}` : ""}">
-      <div class="n">${s.label}</div>
+      <div class="n">${skillIcon(s.key)}${s.label}</div>
       <div class="l">${m.missing ? "—" : s.level}</div>
       <div class="x">${m.missing ? "" : abbr(s.xp)}${
         r ? `<span class="wr ${rankTier(r).cls}">#${num(r)}</span>` : ""}</div>
@@ -1591,6 +1609,16 @@ function renderMemberDetail(m){
    is the game's own record that a skill reached the 500M cap. Fetched per
    member on demand and cached; a 404 (unranked or unknown) is a normal answer.
    ===================================================================== */
+
+/* Skill icons are an optional sidecar like the item ones: if the file isn't
+   there the <img> removes itself and the label stands alone, so the dashboard
+   looks deliberate rather than broken before the asset job has run. */
+function skillIcon(key, cls){
+  if (!key) return "";
+  return `<img class="sicon ${cls || ""}" src="data/icons/skill-${encodeURIComponent(key)}.png"
+            alt="" loading="lazy" onerror="this.remove()">`;
+}
+
 const LB_MISS = Symbol("no leaderboard entry");
 
 /** "world #31 of all players" for the member header, when we know it. */
@@ -1750,30 +1778,54 @@ const upChip = (name, level, max, desc) => {
 async function renderUpgrades(prof){
   const host = $("#memberUpgrades");
   const raw  = (prof && prof.upgrades) || {};
+
+  /* The profile lists EVERY upgrade, using 0 for ones the player hasn't taken —
+     the three Pets upgrades come back as 0 rather than being left out. Filtering
+     those away, as this did, threw out the answer to "what am I missing". */
   const held = new Map();
-  for (const [k, v] of Object.entries(raw)) if (v > 0) held.set(upgradeKey(k), { raw:k, level:Number(v) });
+  for (const [k, v] of Object.entries(raw)){
+    held.set(upgradeKey(k), { raw:k, level:Number(v) || 0 });
+  }
+  const ownedCt = [...held.values()].filter(r => r.level > 0).length;
 
   let cat = await loadUpgradeCatalog();
 
   // A catalogue smaller than what this player already owns isn't a catalogue —
   // it means the extractor grabbed the wrong node. Say so plainly instead of
   // rendering "44 of 2 upgrades owned" and burying everything under "unlisted".
-  const catBad = cat && Object.keys(cat).length < held.size;
+  const catBad = cat && Object.keys(cat).length < ownedCt;
   if (catBad) cat = null;
 
   if (!cat){
-    // No catalogue: names tidied, bare "1"s dropped, nothing invented.
-    const rows = [...held.values()].sort((a, b) => b.level - a.level);
-    host.innerHTML = rows.length
-      ? `<div class="chipwrap">${rows.map(r =>
-          upChip(upgradeTitle(r.raw), r.level, null)).join("")}</div>
-         <div class="hint" style="margin:8px 0 0">${rows.length} upgrades owned. ${
-           catBad
-             ? `The upgrade list built from the game data only had ${
-                 num(state.upgradeCatCount)} entries, fewer than the ${num(held.size)} owned here,
-                so it's being ignored rather than shown wrong.`
-             : "Levels and what's still missing appear once the upgrade list is built."}</div>`
-      : '<div class="empty" style="padding:10px 0">No upgrades reported.</div>';
+    /* No catalogue, but the profile alone is enough for the question that
+       matters: owned versus not taken. Only the ceiling (7 of 10) is missing. */
+    const all = [...held.values()];
+    const ownedRows = all.filter(r => r.level > 0).sort((a, b) => b.level - a.level)
+      .map(r => ({ name: upgradeTitle(r.raw), lvl:r.level, max:null }));
+    const missRows = all.filter(r => r.level <= 0)
+      .map(r => ({ name: upgradeTitle(r.raw), lvl:0, max:null }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    if (!all.length){
+      host.innerHTML = '<div class="empty" style="padding:10px 0">No upgrades reported.</div>';
+      return;
+    }
+    const chip = r => upChip(r.name, r.lvl, r.max);
+    host.innerHTML =
+      `<div class="uptop">
+         <div class="hint" style="margin:0">${num(ownedRows.length)} of ${num(all.length)} upgrades owned · ${
+           num(missRows.length)} not taken yet${
+           catBad ? ` <span class="dim">(the game-data list looked wrong and is being ignored)</span>` : ""}</div>
+         <label class="toggle"><input type="checkbox" id="upHideDone"> Only what\u2019s unfinished</label>
+       </div>` +
+      (missRows.length ? `<div class="upsec"><div class="uph">Not taken <span class="n">${
+        num(missRows.length)}</span></div><div class="chipwrap">${missRows.map(chip).join("")}</div></div>` : "") +
+      `<div class="upsec when-all"><div class="uph">Owned <span class="n">${num(ownedRows.length)}</span>${
+        ""}</div><div class="chipwrap">${ownedRows.map(chip).join("")}</div></div>` +
+      `<div class="hint" style="margin:9px 0 0">Tier ceilings (7 of 10) appear once the upgrade list is built from the game data.</div>`;
+
+    const box0 = $("#upHideDone");
+    if (box0) box0.onchange = () => host.classList.toggle("hide-done", box0.checked);
     return;
   }
 
@@ -1888,7 +1940,9 @@ function renderRace(){
   barList($("#raceBars"), rows);
 
   const totals = data.skillTotals || {};
-  barList($("#raceSkillBars"), Object.entries(totals).map(([k,v]) => ({ label:skillLabel(k), value:Number(v)||0 }))
+  const wireToKey = Object.fromEntries(SKILLS.map(sk => [sk.wire || sk.label, sk.key]));
+  barList($("#raceSkillBars"), Object.entries(totals).map(([k,v]) =>
+      ({ label:skillLabel(k), icon:skillIcon(wireToKey[k]), value:Number(v)||0 }))
     .filter(r => r.value > 0).sort((a,b) => b.value - a.value).map(r => ({ ...r, display:abbr(r.value) })));
 }
 
@@ -2027,7 +2081,7 @@ const BOARD_LIMIT   = 200;     // how deep to look for Overkill on leaderboards
 const HISTORY_URL   = "./data/history.json";
 
 Object.assign(state, {
-  cup:null, board:null, worldRank:null, history:null,
+  cup:null, board:null, worldRank:null, history:null, feed:[],
   skillRanks:null, skillRanksLoading:false,
   rivals:[], rivalInfo:new Map(), memberTimelines:new Map()
 });
@@ -2069,11 +2123,13 @@ function ordinal(n){
 /* Loading                                                               */
 /* --------------------------------------------------------------------- */
 async function loadExtras(){
-  const [cup, board, history] = await Promise.all([
+  const [cup, board, history, milestones] = await Promise.all([
     api(`/api/ClanCup/standings/${encodeURIComponent(CLAN)}?gameMode=${CUP_GAMEMODE}`, { optional:true }),
     api(`/api/Clan/experience/top?hours=168&limit=${BOARD_LIMIT}`, { optional:true }),
-    loadHistory()
+    loadHistory(),
+    api(`/api/Milestone/recent?count=200`, { optional:true })
   ]);
+  mergeMilestones(milestones);
 
   state.cup = Array.isArray(cup) ? cup : null;
   state.board = Array.isArray(board) ? board : null;
@@ -2107,10 +2163,11 @@ async function loadSkillRanks(){
   const rows = await pooled(SKILLS, async s => {
     const wire = s.wire || s.label;
     const board = await api(`/api/Clan/experience/top/${encodeURIComponent(wire)}?hours=168&limit=${BOARD_LIMIT}`, { optional:true });
-    if (!Array.isArray(board)) return { label:s.label, rank:null };
+    if (!Array.isArray(board)) return { key:s.key, label:s.label, rank:null };
     const mine = board.find(c => (c.clanName || "").toLowerCase() === CLAN.toLowerCase());
     const top = board[0];
     return {
+      key: s.key,
       label: s.label,
       rank: mine ? mine.rank : null,
       experience: mine ? mine.experience : 0,
@@ -2287,7 +2344,7 @@ function renderRanks(){
       `<div class="tbl-scroll"><table>
         <thead><tr><th>Skill</th><th>World rank</th><th>Our xp</th><th>Contributors</th><th>Leader</th></tr></thead>
         <tbody>${rows.map(r => `<tr>
-          <td>${esc(r.label)}</td>
+          <td>${skillIcon(r.key)}${esc(r.label)}</td>
           <td>${r.rank ? rankBadge(r.rank) : '<span class="dim">unranked</span>'}</td>
           <td>${r.experience ? abbr(r.experience) : '<span class="dim">—</span>'}</td>
           <td>${r.contributors ? num(r.contributors) : '<span class="dim">—</span>'}</td>
@@ -2390,6 +2447,67 @@ function renderPresence(){
   }).join("")}</div>`;
 }
 
+
+
+/* --------------------------------------------------------------------- */
+/* Clan milestones                                                        */
+/* --------------------------------------------------------------------- */
+/* /api/Milestone/recent is a GLOBAL feed of the last N events across every
+   clan, so Overkill's share of any single poll is small. We keep what we've
+   seen in this session and merge each poll into it, which turns a thin slice
+   into a feed worth reading. It is not history: a reload starts over, and the
+   daily snapshot is what would make it permanent. */
+const FEED_MAX = 60;
+
+function mergeMilestones(list){
+  if (!Array.isArray(list)) return;
+  const seen = new Set(state.feed.map(f => f.id));
+  const mine = list.filter(e => (e.clan || "").toLowerCase() === CLAN.toLowerCase());
+  for (const e of mine){
+    const id = `${e.username}|${e.timestamp}|${e.skill || e.itemId}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    state.feed.push({ ...e, id });
+  }
+  state.feed.sort((a, b) => b.timestamp - a.timestamp);
+  if (state.feed.length > FEED_MAX) state.feed.length = FEED_MAX;
+}
+
+function renderFeed(){
+  const panel = $("#feedPanel");
+  if (!panel) return;
+  if (!state.feed.length){ panel.hidden = true; return; }
+  panel.hidden = false;
+
+  const levels = state.feed.filter(e => e.type === 1).length;
+  const drops  = state.feed.length - levels;
+  $("#feedHint").textContent =
+    `${num(state.feed.length)} milestone${state.feed.length === 1 ? "" : "s"} seen since this page loaded` +
+    ` · ${num(levels)} level-up${levels === 1 ? "" : "s"}, ${num(drops)} drop${drops === 1 ? "" : "s"}` +
+    ` · the game's feed is global, so this fills in as events pass through it`;
+
+  $("#feedList").innerHTML = `<div class="feed">${state.feed.map(e => {
+    const when = new Date(e.timestamp * 1000);
+    const skillKey = e.skill ? String(e.skill).toLowerCase() : null;
+    const what = e.type === 1 && skillKey
+      ? `${skillIcon(skillKey)}reached <strong>level ${num(e.level)}</strong> ${
+          esc(KEY_TO_LABEL[skillKey] || spaceCase(e.skill))}`
+      : e.itemId
+        ? `found <strong>${esc(itemNameById(e.itemId))}</strong>`
+        : "hit a milestone";
+    return `<div class="fev">
+      <span class="t">${when.toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})}</span>
+      <span class="m"><strong>${esc(e.displayName || e.username)}</strong> ${what}</span>
+    </div>`;
+  }).join("")}</div>`;
+}
+
+/** Item names come from the metadata the market already loaded, when it has. */
+function itemNameById(id){
+  const it = state.itemById ? state.itemById.get(Number(id)) : null;
+  if (!it) return "item #" + num(id);
+  return typeof itemLabel === "function" ? itemLabel(it.name) : it.name;
+}
 
 /* --------------------------------------------------------------------- */
 /* Render — members on the world boards                                   */
@@ -2537,6 +2655,7 @@ function renderTrends(){
 /* --------------------------------------------------------------------- */
 function renderExtras(){
   renderTrophies();
+  renderFeed();
   renderPresence();
   renderCup();
   renderRanks();
