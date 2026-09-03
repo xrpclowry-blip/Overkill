@@ -207,6 +207,8 @@ input[type="search"]{min-width:180px}
 .bonus .row div span{display:block;font-size:9.5px;color:var(--text-muted);
   text-transform:uppercase;letter-spacing:.05em}
 .bonus .row div b{font-size:16px;font-variant-numeric:tabular-nums}
+.bonus .row div b.pos{color:var(--series-3)}
+.bonus .row div b.neg{color:var(--series-2)}
 .sect{font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);
   font-weight:600;margin:0 0 8px}
 .kv{display:grid;grid-template-columns:1fr auto;gap:2px 10px;font-size:12.5px}
@@ -1422,8 +1424,13 @@ async function renderBonuses(gear){
   host.innerHTML = BONUS_GROUPS.map(([name, keys]) => `
     <div class="bonus">
       <h4>${name}</h4>
-      <div class="row">${keys.map(k =>
-        `<div><span>${BONUS_LABEL[k]}</span><b>${num(total[k] || 0)}</b></div>`).join("")}</div>
+      <div class="row">${keys.map(k => {
+        const v = total[k] || 0;
+        // Signed, because armour carries real penalties: a plain "-15" beside a
+        // plain "12" reads as a typo until you know the numbers can go negative.
+        return `<div><span>${BONUS_LABEL[k]}</span><b class="${
+          v > 0 ? "pos" : v < 0 ? "neg" : ""}">${v > 0 ? "+" : ""}${num(v)}</b></div>`;
+      }).join("")}</div>
     </div>`).join("");
 }
 
