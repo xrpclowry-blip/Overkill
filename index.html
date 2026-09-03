@@ -253,6 +253,9 @@ input[type="search"]{min-width:180px}
 .sk .n{font-size:11px;color:var(--text-muted)}
 .sk .l{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}
 .sk .x{font-size:10.5px;color:var(--text-muted);font-variant-numeric:tabular-nums}
+/* World position, kept quieter than the level so it reads as an aside. */
+.wr{color:var(--accent);font-size:9.5px;margin-left:5px;opacity:.85;font-weight:600}
+.k2 .wr{margin-left:6px}
 
 /* Two finish lines per skill: level 120, then the 500M xp cap. The bar resets
    and changes colour at 120 so the second climb is visible at all. */
@@ -503,6 +506,16 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
       <h2>Clan rank by skill</h2>
       <p class="hint" id="rankHint">Where Overkill places among all clans for experience earned in the last 7 days.</p>
       <div id="rankSkills"></div>
+    </div>
+    <div class="panel" style="margin-top:14px">
+      <h2>Members on the world boards</h2>
+      <p class="hint" id="wrHint">Each member's own position among all players — unlike the clan
+        boards above, these are lifetime standings, not a rolling window.</p>
+      <div class="controls">
+        <select id="wrSkill"></select>
+        <button class="ghost" id="wrLoad">Load world ranks</button>
+      </div>
+      <div class="tbl-scroll"><table id="wrTable"></table></div>
     </div>
     <div class="panel" style="margin-top:14px">
       <h2>Compare against rivals</h2>
@@ -860,6 +873,7 @@ async function pooled(items, worker, limit = 5){
    State
    ===================================================================== */
 const state = {
+  playerRanks: new Map(),   // name -> leaderboard profile, or LB_MISS
   clan:null, members:[], byName:new Map(),
   xp:{ 24:null, 168:null },
   timeline:[], logs:[],
@@ -1404,18 +1418,24 @@ function showMember(name){
         ? (acctDays/365).toFixed(1) + " years old" : Math.round(acctDays) + " days old"}` : "",
     prev.length ? `formerly ${prev.slice(0,3).map(esc).join(", ")}` : "",
     m.missing ? "profile unavailable" : `total level ${num(m.totalLevel)} · ${abbr(m.totalXp)} xp`,
+    worldRankLine(m),
     `${abbr(m.xp168)} xp this week`,
     m.offline == null ? "" : `last seen ${ago(m.offline)} ago${m.lastTask ? ` (${esc(m.lastTask)})` : ""}`,
     m.joined ? `joined ${dateShort(m.joined)}` : "",
     v ? `vault: ${gold(v.inValue)} in / ${gold(v.outValue)} out` : ""
   ].filter(Boolean).join(" · ");
+  const lb = state.playerRanks.get(m.name);
   $("#memberSkills").innerHTML = m.skills.map(s => {
     const st = skillStage(s.xp);
+    const r = rankOf(lb, s.key);
+    const capped = capDateFor(lb, s.key, s.xp);
     return `
-    <div class="sk" title="${esc(s.label)} — ${num(s.xp)} xp · ${st.note}">
+    <div class="sk" title="${esc(s.label)} — ${num(s.xp)} xp · ${st.note}${
+      r ? ` · world #${num(r)}` : ""}${capped ? ` · capped ${dateShort(capped.toISOString())}` : ""}">
       <div class="n">${s.label}</div>
       <div class="l">${m.missing ? "—" : s.level}</div>
-      <div class="x">${m.missing ? "" : abbr(s.xp)}</div>
+      <div class="x">${m.missing ? "" : abbr(s.xp)}${
+        r ? `<span class="wr">#${num(r)}</span>` : ""}</div>
       <div class="track"><div class="fill ${st.stage}${
              st.pct > 0 || st.stage !== "pre" ? " has" : ""}"
            style="width:${m.missing ? 0 : (st.pct*100).toFixed(1)}%"></div></div>
@@ -1427,6 +1447,14 @@ function showMember(name){
     `<span class="lg"><i class="cap"></i>capped at 500M</span>`;
   renderMemberDetail(m);
   if (typeof loadMemberTimeline === "function") loadMemberTimeline(name);
+
+  // World ranks arrive after the panel is already up: fetch once, then redraw
+  // this member only if they're still the one on screen.
+  if (!state.playerRanks.has(name)){
+    loadPlayerRank(m).then(() => {
+      if ($("#memberName").textContent === name) showMember(name);
+    });
+  }
   $("#memberPanel").scrollIntoView({ behavior:"smooth", block:"nearest" });
 }
 
@@ -1529,9 +1557,11 @@ function renderMemberDetail(m){
   // No Clan Cup marker here: these are lifetime totals and the cup resets
   // weekly, so a badge would imply kills counted toward a cup they predate.
   $("#memberPvm").innerHTML = pvm.length
-    ? `<div class="kv">${pvm.map(([k,v]) =>
-        `<div class="k2">${esc(spaceCase(k))}</div>
-         <div class="v2 ${v >= 1000 ? "strong" : ""}">${num(v)}</div>`).join("")}
+    ? `<div class="kv">${pvm.map(([k,v]) => {
+        const r = rankOf(state.playerRanks.get(m.name), lbKey(k));
+        return `<div class="k2">${esc(spaceCase(k))}${
+          r ? `<span class="wr">#${num(r)}</span>` : ""}</div>
+         <div class="v2 ${v >= 1000 ? "strong" : ""}">${num(v)}</div>`; }).join("")}
        </div>
        <div class="hint" style="margin:10px 0 0">${num(totalKills)} lifetime completions
          across ${pvm.length} encounters · this week's Clan Cup standings are on the
@@ -1539,6 +1569,68 @@ function renderMemberDetail(m){
     : '<div class="empty" style="padding:10px 0">No boss kills recorded.</div>';
 
   renderUpgrades(prof);
+}
+
+
+/* =====================================================================
+   World leaderboard position
+   /api/Leaderboard/profile/players:<mode>/<name> returns the player's global
+   rank for total level, every skill, and every boss — plus expCapDate, which
+   is the game's own record that a skill reached the 500M cap. Fetched per
+   member on demand and cached; a 404 (unranked or unknown) is a normal answer.
+   ===================================================================== */
+const LB_MISS = Symbol("no leaderboard entry");
+
+/** "world #31 of all players" for the member header, when we know it. */
+function worldRankLine(m){
+  const lb = state.playerRanks.get(m.name);
+  if (!lb || lb === LB_MISS) return "";
+  const r = lb.totalLevelResult && lb.totalLevelResult.rank;
+  return r ? `world #${num(r)} by total level` : "";
+}
+
+/** pvmStats use "ReckoningOfTheGods"; the boards use "reckoning_of_the_gods". */
+function lbKey(raw){
+  return String(raw || "").replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+}
+
+async function loadPlayerRank(m){
+  if (state.playerRanks.has(m.name)) return state.playerRanks.get(m.name);
+  state.playerRanks.set(m.name, LB_MISS);          // claim it, so we fetch once
+  const mode = m.gameMode || "default";
+  const data = await api(
+    `/api/Leaderboard/profile/players:${encodeURIComponent(mode)}/${encodeURIComponent(m.name)}`,
+    { optional:true });
+  state.playerRanks.set(m.name, (data && data.fields) ? data : LB_MISS);
+  return state.playerRanks.get(m.name);
+}
+
+const rankOf = (lb, key) => {
+  if (!lb || lb === LB_MISS || !lb.fields) return null;
+  const f = lb.fields[key];
+  return f && f.rank ? f.rank : null;
+};
+
+/** The game's own flag that a skill is capped, rather than our arithmetic. */
+/**
+ * The game's cap date CONFIRMS a capped skill; it never overrides the number on
+ * the card. If the profile says 25M and the board says capped, the two sources
+ * disagree and the honest thing is to show the experience we have and say
+ * nothing about a cap — not to paint the bar red over a 25M skill.
+ */
+const capDateFor = (lb, key, xp) => {
+  if (!lb || lb === LB_MISS || !lb.fields || xp < XP_CAP) return null;
+  const f = lb.fields[key];
+  return f ? ticksToDate(f.expCapDate) : null;
+};
+
+/** .NET ticks (100ns since year 1) -> a date, for "capped on" tooltips. */
+function ticksToDate(ticks){
+  const n = Number(ticks);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const ms = n / 10000 - 62135596800000;
+  const d = new Date(ms);
+  return isNaN(d) ? null : d;
 }
 
 /* =====================================================================
@@ -2237,6 +2329,95 @@ function renderPresence(){
   }).join("")}</div>`;
 }
 
+
+/* --------------------------------------------------------------------- */
+/* Render — members on the world boards                                   */
+/* --------------------------------------------------------------------- */
+/* One request per member, so this is opt-in rather than part of page load:
+   twenty calls fired automatically would slow the whole dashboard for a
+   panel most visitors never scroll to. */
+const wrSort = { key:"rank", dir:1 };
+let wrLoading = false;
+
+function initWorldRanks(){
+  const sel = $("#wrSkill");
+  if (!sel) return;
+  sel.innerHTML = '<option value="__total">Total level</option>' +
+    SKILLS.map(s => `<option value="${s.key}">${s.label}</option>`).join("");
+  sel.onchange = renderWorldRanks;
+  $("#wrLoad").onclick = loadWorldRanks;
+}
+
+async function loadWorldRanks(){
+  if (wrLoading) return;
+  wrLoading = true;
+  const btn = $("#wrLoad");
+  btn.disabled = true;
+  const todo = state.members.filter(m => !state.playerRanks.has(m.name));
+  let done = 0;
+  const tick = () => { btn.textContent = `Loading… ${++done}/${todo.length}`; };
+  await pooled(todo, async m => { await loadPlayerRank(m); tick(); renderWorldRanks(); }, 3);
+  btn.textContent = "Refresh";
+  btn.disabled = false;
+  wrLoading = false;
+  renderWorldRanks();
+}
+
+function renderWorldRanks(){
+  const host = $("#wrTable");
+  if (!host) return;
+  const key = ($("#wrSkill") && $("#wrSkill").value) || "__total";
+
+  const rows = state.members.map(m => {
+    const lb = state.playerRanks.get(m.name);
+    if (!lb || lb === LB_MISS) return { name:m.name, rank:null, score:null, capped:false };
+    if (key === "__total"){
+      const t = lb.totalLevelResult || {};
+      return { name:m.name, rank:t.rank || null, score:t.totalLevel || null, capped:false };
+    }
+    const f = (lb.fields || {})[key] || {};
+    return { name:m.name, rank:f.rank || null, score:f.score || null,
+             capped: Number(f.expCapDate) > 0 && Number(f.score) >= XP_CAP };
+  });
+
+  const known = rows.filter(r => r.rank != null);
+  if (!known.length){
+    host.innerHTML = "";
+    $("#wrHint").textContent = wrLoading
+      ? "Fetching each member's standing…"
+      : "Each member's own position among all players. Press the button to load — it's one request per member, so it isn't fetched automatically.";
+    return;
+  }
+  $("#wrHint").innerHTML = `${num(known.length)} of ${num(state.members.length)} members placed` +
+    (known.length < state.members.length
+      ? ` · the rest are unranked on this board or still loading` : "") +
+    ` · best is <strong>${esc(known.reduce((a,b) => a.rank <= b.rank ? a : b).name)}</strong>`;
+
+  known.sort((a, b) => {
+    const v = wrSort.key === "name" ? a.name.localeCompare(b.name)
+            : wrSort.key === "score" ? (b.score||0) - (a.score||0)
+            : (a.rank - b.rank);
+    return wrSort.dir * v;
+  });
+
+  const isTotal = key === "__total";
+  host.innerHTML =
+    `<thead><tr>
+       <th data-k="name">Member</th>
+       <th data-k="rank">World rank</th>
+       <th data-k="score">${isTotal ? "Total level" : "Experience"}</th>
+     </tr></thead><tbody>${known.map(r => `
+       <tr><td>${esc(r.name)}${r.capped ? ' <span class="pill on">capped</span>' : ""}</td>
+           <td>${rankBadge(r.rank)}</td>
+           <td>${isTotal ? num(r.score) : abbr(r.score)}</td></tr>`).join("")}</tbody>`;
+
+  host.querySelectorAll("th").forEach(th => th.onclick = () => {
+    const k = th.dataset.k;
+    if (wrSort.key === k) wrSort.dir *= -1; else { wrSort.key = k; wrSort.dir = 1; }
+    renderWorldRanks();
+  });
+}
+
 /* --------------------------------------------------------------------- */
 /* Render — Trends (only when a history sidecar exists)                   */
 /* --------------------------------------------------------------------- */
@@ -2316,8 +2497,9 @@ function addWorldRankTile(){
 }
 
 function initExtras(){
+  initWorldRanks();
   $$("nav.tabs button").forEach(b => b.addEventListener("click", () => {
-    if (b.dataset.view === "ranks") loadSkillRanks();
+    if (b.dataset.view === "ranks"){ loadSkillRanks(); renderWorldRanks(); }
   }));
   $("#rivalPick").onchange = async e => {
     const name = e.target.value;
