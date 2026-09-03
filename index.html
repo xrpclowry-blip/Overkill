@@ -239,6 +239,15 @@ input[type="search"]{min-width:180px}
 .uph .n{background:var(--surface-3);border-radius:999px;padding:0 7px;font-size:10.5px;
   letter-spacing:0;color:var(--text-secondary)}
 .uph .note{text-transform:none;letter-spacing:0;font-weight:400;font-size:10.5px;opacity:.75}
+.uptop{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;
+  justify-content:space-between;margin-bottom:10px}
+.toggle{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;
+  color:var(--text-muted);cursor:pointer;user-select:none}
+.toggle input{accent-color:var(--accent);cursor:pointer}
+.upcat{margin-top:7px}
+.upcat .ucn{font-size:10.5px;color:var(--text-muted);margin-bottom:4px;opacity:.85}
+/* The game's own "Hide unlocked" switch, applied to the finished groups. */
+#memberUpgrades.hide-done .upsec.when-all{display:none}
 .skillgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:6px}
 .sk{background:var(--surface-2);border:1px solid var(--border-soft);border-radius:8px;padding:7px 9px}
 .sk .n{font-size:11px;color:var(--text-muted)}
@@ -1564,12 +1573,13 @@ async function loadUpgradeCatalog(){
     if (res.ok){
       const doc = await res.json();
       if (doc && doc.upgrades && Object.keys(doc.upgrades).length) state.upgradeCat = doc.upgrades;
+      state.upgradeCatCount = state.upgradeCat ? Object.keys(state.upgradeCat).length : 0;
     }
   } catch { /* sidecar not built yet */ }
   return state.upgradeCat;
 }
 
-const upChip = (name, level, max) => {
+const upChip = (name, level, max, desc) => {
   const done = max != null && level >= max;
   const cls  = level <= 0 ? "up miss" : done ? "up done" : "up part";
   const val  = max == null
@@ -1577,7 +1587,11 @@ const upChip = (name, level, max) => {
     : max === 1
       ? ""                                                  // owned / not owned
       : ` <b>${num(level)}</b><span class="of">/${num(max)}</span>`;
-  return `<span class="${cls}">${esc(name)}${val}</span>`;
+  const tip = [name,
+    max == null ? null : max === 1 ? (level > 0 ? "owned" : "not owned")
+                                   : `tier ${num(level)} of ${num(max)}`,
+    desc || null].filter(Boolean).join(" — ");
+  return `<span class="${cls}" title="${esc(tip)}">${esc(name)}${val}</span>`;
 };
 
 async function renderUpgrades(prof){
@@ -1586,7 +1600,13 @@ async function renderUpgrades(prof){
   const held = new Map();
   for (const [k, v] of Object.entries(raw)) if (v > 0) held.set(upgradeKey(k), { raw:k, level:Number(v) });
 
-  const cat = await loadUpgradeCatalog();
+  let cat = await loadUpgradeCatalog();
+
+  // A catalogue smaller than what this player already owns isn't a catalogue —
+  // it means the extractor grabbed the wrong node. Say so plainly instead of
+  // rendering "44 of 2 upgrades owned" and burying everything under "unlisted".
+  const catBad = cat && Object.keys(cat).length < held.size;
+  if (catBad) cat = null;
 
   if (!cat){
     // No catalogue: names tidied, bare "1"s dropped, nothing invented.
@@ -1594,8 +1614,12 @@ async function renderUpgrades(prof){
     host.innerHTML = rows.length
       ? `<div class="chipwrap">${rows.map(r =>
           upChip(upgradeTitle(r.raw), r.level, null)).join("")}</div>
-         <div class="hint" style="margin:8px 0 0">${rows.length} upgrades owned.
-           Levels and what's still missing appear once the upgrade list is built.</div>`
+         <div class="hint" style="margin:8px 0 0">${rows.length} upgrades owned. ${
+           catBad
+             ? `The upgrade list built from the game data only had ${
+                 num(state.upgradeCatCount)} entries, fewer than the ${num(held.size)} owned here,
+                so it's being ignored rather than shown wrong.`
+             : "Levels and what's still missing appear once the upgrade list is built."}</div>`
       : '<div class="empty" style="padding:10px 0">No upgrades reported.</div>';
     return;
   }
@@ -1605,36 +1629,59 @@ async function renderUpgrades(prof){
     const have = held.get(id);
     const lvl  = have ? have.level : 0;
     const max  = def.max ?? null;
-    const row  = { name: def.name || upgradeTitle(id), lvl, max };
+    const row  = { name: def.name || upgradeTitle(id), lvl, max,
+                   cat: def.cat || null, desc: def.desc || null };
     if (lvl <= 0) miss.push(row);
     else if (max != null && lvl >= max) done.push(row);
     else part.push(row);
     held.delete(id);
   }
   // Anything the player has that the game data doesn't list — surfaced, not dropped.
-  const extra = [...held.values()].map(r => ({ name: upgradeTitle(r.raw), lvl:r.level, max:null }));
+  const extra = [...held.values()].map(r =>
+    ({ name: upgradeTitle(r.raw), lvl:r.level, max:null, cat:null, desc:null }));
 
+  // Closest to finished first: that's the cheapest thing left to complete.
   const byGap = (a, b) => (b.max ? b.lvl / b.max : 0) - (a.max ? a.lvl / a.max : 0);
   part.sort(byGap);
   done.sort((a, b) => a.name.localeCompare(b.name));
   miss.sort((a, b) => a.name.localeCompare(b.name));
 
-  const section = (title, rows, note) => rows.length ? `
-    <div class="upsec">
+  const chips = rows => `<div class="chipwrap">${
+    rows.map(r => upChip(r.name, r.lvl, r.max, r.desc)).join("")}</div>`;
+
+  /* The game groups these (Skilling / Combat / Pets). Mirror that when the data
+     carries a category, and fall back to one flat list when it doesn't. */
+  const grouped = rows => {
+    const cats = [...new Set(rows.map(r => r.cat).filter(Boolean))].sort();
+    if (!cats.length) return chips(rows);
+    const loose = rows.filter(r => !r.cat);
+    return cats.map(c => `<div class="upcat"><div class="ucn">${esc(c)}</div>${
+      chips(rows.filter(r => r.cat === c))}</div>`).join("") +
+      (loose.length ? `<div class="upcat"><div class="ucn">Other</div>${chips(loose)}</div>` : "");
+  };
+
+  const section = (title, rows, note, cls) => rows.length ? `
+    <div class="upsec ${cls || ""}">
       <div class="uph">${title} <span class="n">${num(rows.length)}</span>${
         note ? `<span class="note">${note}</span>` : ""}</div>
-      <div class="chipwrap">${rows.map(r => upChip(r.name, r.lvl, r.max)).join("")}</div>
+      ${grouped(rows)}
     </div>` : "";
 
   const ownedCount = done.length + part.length + extra.length;
   host.innerHTML =
-    `<div class="hint" style="margin:0 0 10px">${num(ownedCount)} of ${
-      num(Object.keys(cat).length)} upgrades owned · ${num(done.length)} fully levelled · ${
-      num(miss.length)} not taken yet</div>` +
+    `<div class="uptop">
+       <div class="hint" style="margin:0">${num(ownedCount)} of ${
+         num(Object.keys(cat).length)} upgrades owned \u00b7 ${num(done.length)} fully levelled \u00b7 ${
+         num(miss.length)} not taken yet</div>
+       <label class="toggle"><input type="checkbox" id="upHideDone"> Only what\u2019s unfinished</label>
+     </div>` +
     section("Still levelling", part, "closest to finished first") +
-    section("Finished", done) +
     section("Not taken", miss) +
-    section("Not in the game data", extra, "reported by the profile but unlisted");
+    section("Finished", done, "", "when-all") +
+    section("Not in the game data", extra, "reported by the profile but unlisted", "when-all");
+
+  const box = $("#upHideDone");
+  if (box) box.onchange = () => host.classList.toggle("hide-done", box.checked);
 }
 
 /* =====================================================================
