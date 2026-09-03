@@ -242,13 +242,15 @@ input[type="search"]{min-width:180px}
 .fill.cap{background:var(--prog-cap)}
 .hint a{color:var(--accent);text-decoration:none;border-bottom:1px solid #3987e544}
 .hint a:hover{border-bottom-color:var(--accent)}
-.legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:9px;
+/* Its own class, not .legend — that one belongs to the charts and uses
+   10x10 swatches; reusing it here would silently reshape every chart legend. */
+.skill-legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:9px;
   font-size:10.5px;color:var(--text-muted)}
-.legend .lg{display:inline-flex;align-items:center;gap:6px}
-.legend i{width:14px;height:3px;border-radius:2px;display:inline-block}
-.legend i.pre{background:var(--prog-pre)}
-.legend i.post{background:var(--prog-post)}
-.legend i.cap{background:var(--prog-cap)}
+.skill-legend .lg{display:inline-flex;align-items:center;gap:6px}
+.skill-legend i{width:14px;height:3px;border-radius:2px;display:inline-block}
+.skill-legend i.pre{background:var(--prog-pre)}
+.skill-legend i.post{background:var(--prog-post)}
+.skill-legend i.cap{background:var(--prog-cap)}
 /* rank badges + trophies */
 .rk{
   display:inline-block;min-width:34px;text-align:center;font-variant-numeric:tabular-nums;
@@ -278,6 +280,7 @@ input[type="search"]{min-width:180px}
 .chip .x{color:var(--text-muted);cursor:pointer;font-size:14px;line-height:1}
 .chip .x:hover{color:var(--bad)}
 .chip .live-dot{width:7px;height:7px;border-radius:50%;background:var(--good);flex:0 0 auto}
+.chip .idle-dot{width:7px;height:7px;border-radius:50%;background:#4a4a45;flex:0 0 auto}
 .feed{max-height:600px;overflow-y:auto;margin:0 -6px;padding:0 6px}
 .ev{display:grid;grid-template-columns:auto 1fr auto;gap:10px;padding:7px 0;border-bottom:1px solid var(--border-soft);font-size:12.5px;align-items:baseline}
 .ev .t{color:var(--text-muted);font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap}
@@ -339,7 +342,7 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
   <!-- OVERVIEW -->
   <section class="view" id="view-overview">
     <div class="panel" id="presencePanel" style="margin-bottom:14px" hidden>
-      <h2>Online now</h2>
+      <h2>Who's on</h2>
       <p class="hint" id="presenceHint"></p>
       <div id="presenceList"></div>
     </div>
@@ -408,7 +411,7 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
 
       <div class="sect">Skills</div>
       <div class="skillgrid" id="memberSkills"></div>
-      <div class="legend" id="skillLegend"></div>
+      <div class="skill-legend" id="skillLegend"></div>
 
       <div class="sect" style="margin-top:16px">Upgrades</div>
       <div id="memberUpgrades"></div>
@@ -1688,7 +1691,7 @@ function initControls(){
 "use strict";
 
 /* =====================================================================
-   Clan Cup, rankings, rivals, live presence, member timelines, history.
+   Clan Cup, rankings, rivals, who's on, member timelines, history.
    ===================================================================== */
 
 const CUP_GAMEMODE  = "default";
@@ -1696,7 +1699,7 @@ const BOARD_LIMIT   = 200;     // how deep to look for Overkill on leaderboards
 const HISTORY_URL   = "./data/history.json";
 
 Object.assign(state, {
-  cup:null, board:null, worldRank:null, presence:null, history:null,
+  cup:null, board:null, worldRank:null, history:null,
   skillRanks:null, skillRanksLoading:false,
   rivals:[], rivalInfo:new Map(), memberTimelines:new Map()
 });
@@ -1738,17 +1741,14 @@ function ordinal(n){
 /* Loading                                                               */
 /* --------------------------------------------------------------------- */
 async function loadExtras(){
-  const names = state.members.map(m => m.name);
-  const [cup, board, presence, history] = await Promise.all([
+  const [cup, board, history] = await Promise.all([
     api(`/api/ClanCup/standings/${encodeURIComponent(CLAN)}?gameMode=${CUP_GAMEMODE}`, { optional:true }),
     api(`/api/Clan/experience/top?hours=168&limit=${BOARD_LIMIT}`, { optional:true }),
-    loadPresence(names),
     loadHistory()
   ]);
 
   state.cup = Array.isArray(cup) ? cup : null;
   state.board = Array.isArray(board) ? board : null;
-  state.presence = presence;
   state.history = history;
 
   if (state.board){
@@ -1756,13 +1756,6 @@ async function loadExtras(){
     state.worldRank = i >= 0 ? i + 1 : null;
   }
   state.skillRanks = null;   // invalidate; the Rankings tab refetches on demand
-}
-
-async function loadPresence(names){
-  if (!names.length) return null;
-  const qs = names.map(n => "usernames=" + encodeURIComponent(n)).join("&");
-  const data = await api(`/api/Player/activities?${qs}`, { optional:true });
-  return (data && typeof data === "object") ? data : null;
 }
 
 /* History is an optional sidecar written by the daily snapshot job.
@@ -2036,19 +2029,36 @@ function renderRivals(){
 /* --------------------------------------------------------------------- */
 /* Render — live presence                                                 */
 /* --------------------------------------------------------------------- */
+/* Presence comes from each member's own last-seen time, not from
+   /api/Player/activities. That endpoint returned a row for every member we
+   asked about — including one whose profile said 6.3 hours offline — so a row
+   there does not mean "online". hoursOffline is the honest signal. */
+const ONLINE_HOURS = 10 / 60;      // seen within the last ten minutes
+
 function renderPresence(){
   const panel = $("#presencePanel");
-  const p = state.presence;
-  if (!p){ panel.hidden = true; return; }
-  const online = Object.keys(p).filter(n => state.byName.has(n));
-  if (!online.length){ panel.hidden = true; return; }
+  const seen  = state.members.filter(m => m.offline != null);
+  if (!seen.length){ panel.hidden = true; return; }
+
+  const online = seen.filter(m => m.offline < ONLINE_HOURS)
+                     .sort((a, b) => a.offline - b.offline);
   panel.hidden = false;
-  $("#presenceHint").textContent =
-    `${online.length} of ${state.members.length} members active right now · last task shown from their most recent logout`;
-  $("#presenceList").innerHTML = `<div class="chips">${online.map(n => {
-    const m = state.byName.get(n);
-    return `<span class="chip"><span class="live-dot"></span><b>${esc(n)}</b>${
-      m && m.lastTask ? `<span class="dim">${esc(m.lastTask)}</span>` : ""}</span>`;
+
+  $("#presenceHint").textContent = online.length
+    ? `${online.length} of ${state.members.length} members seen in the last 10 minutes`
+    : `Nobody seen in the last 10 minutes — most recent below`;
+
+  // With nobody online, show who was closest to it rather than an empty box.
+  const show = online.length ? online
+    : seen.slice().sort((a, b) => a.offline - b.offline).slice(0, 6);
+
+  $("#presenceList").innerHTML = `<div class="chips">${show.map(m => {
+    const fresh = m.offline < ONLINE_HOURS;
+    return `<span class="chip" title="${esc(m.name)} — last seen ${ago(m.offline)} ago${
+      m.lastTask ? `, last task ${esc(m.lastTask)}` : ""}">${
+      fresh ? '<span class="live-dot"></span>' : '<span class="idle-dot"></span>'}<b>${esc(m.name)}</b>${
+      m.offline < 1/60 ? '<span class="dim">now</span>'
+                       : `<span class="dim">${ago(m.offline)} ago</span>`}</span>`;
   }).join("")}</div>`;
 }
 
