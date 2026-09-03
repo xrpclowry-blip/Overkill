@@ -240,6 +240,8 @@ input[type="search"]{min-width:180px}
 .fill.pre{background:var(--prog-pre)}
 .fill.post{background:var(--prog-post)}
 .fill.cap{background:var(--prog-cap)}
+.hint a{color:var(--accent);text-decoration:none;border-bottom:1px solid #3987e544}
+.hint a:hover{border-bottom-color:var(--accent)}
 .legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:9px;
   font-size:10.5px;color:var(--text-muted)}
 .legend .lg{display:inline-flex;align-items:center;gap:6px}
@@ -1436,24 +1438,6 @@ async function loadItemStats(){
   return state.itemStats;
 }
 
-/* Which bosses are Clan Cup objectives is read from the live standings, not
-   kept in a list here — the objectives rotate, and a hardcoded set would go
-   quietly wrong the first time they changed. Returns key -> { name, rank }. */
-const CUP_SUFFIX = /(Kills|Completions|Clears|Speed|Time|Score|Best)$/i;
-
-function cupBossMap(){
-  const map = new Map();
-  for (const row of state.cup || []){
-    const raw  = String(row.objective || "");
-    const boss = raw.replace(CUP_SUFFIX, "");
-    if (!boss) continue;
-    const key = boss.toLowerCase();
-    if (!map.has(key)) map.set(key, []);
-    map.get(key).push({ name: raw, rank: row.rank });
-  }
-  return map;
-}
-
 function spaceCase(raw){
   return String(raw||"").replace(/([a-z0-9])([A-Z])/g,"$1 $2").replace(/^./,c=>c.toUpperCase());
 }
@@ -1515,24 +1499,16 @@ function renderMemberDetail(m){
   const pvm = Object.entries((prof && prof.pvmStats) || {})
     .filter(([,v]) => v > 0).sort((a,b) => b[1] - a[1]);
   const totalKills = pvm.reduce((s,[,v]) => s + v, 0);
-  const cupBosses = cupBossMap();
-  const badge = k => {
-    const hits = cupBosses.get(String(k).toLowerCase());
-    if (!hits || !hits.length) return "";
-    const ranked = hits.filter(h => h.rank != null).sort((a,b) => a.rank - b.rank);
-    const detail = ranked.length
-      ? ranked.map(h => `${spaceCase(h.name)}: Overkill is #${num(h.rank)}`).join(" · ")
-      : hits.map(h => spaceCase(h.name)).join(" · ");
-    return ` <span class="pill deputy" title="A Clan Cup objective this season — ` +
-           `${esc(detail)}. Your kills here feed the clan's standing.">cup</span>`;
-  };
+  // No Clan Cup marker here: these are lifetime totals and the cup resets
+  // weekly, so a badge would imply kills counted toward a cup they predate.
   $("#memberPvm").innerHTML = pvm.length
     ? `<div class="kv">${pvm.map(([k,v]) =>
-        `<div class="k2">${esc(spaceCase(k))}${badge(k)}</div>
+        `<div class="k2">${esc(spaceCase(k))}</div>
          <div class="v2 ${v >= 1000 ? "strong" : ""}">${num(v)}</div>`).join("")}
        </div>
-       <div class="hint" style="margin:10px 0 0">${num(totalKills)} total across ${pvm.length} encounters${
-         cupBosses.size ? ' · <b>cup</b> marks a Clan Cup objective this season' : ""}</div>`
+       <div class="hint" style="margin:10px 0 0">${num(totalKills)} lifetime completions
+         across ${pvm.length} encounters · this week's Clan Cup standings are on the
+         <a href="#" data-goto="cup">Clan Cup tab</a></div>`
     : '<div class="empty" style="padding:10px 0">No boss kills recorded.</div>';
 
   const ups = Object.entries((prof && prof.upgrades) || {})
@@ -1662,11 +1638,25 @@ function renderAll(){
   renderLog();
 }
 
+function goToView(name){
+  const b = $(`nav.tabs button[data-view="${name}"]`);
+  if (b) b.click();
+  window.scrollTo({ top:0, behavior:"smooth" });
+}
+
 function initControls(){
   $$("nav.tabs button").forEach(b => b.onclick = () => {
     $$("nav.tabs button").forEach(x => x.setAttribute("aria-selected", String(x === b)));
     $$("section.view").forEach(s => s.hidden = s.id !== "view-" + b.dataset.view);
     hideTip();
+  });
+
+  // In-page links that jump to another tab (e.g. "see the Clan Cup tab").
+  document.addEventListener("click", e => {
+    const a = e.target.closest("[data-goto]");
+    if (!a) return;
+    e.preventDefault();
+    goToView(a.dataset.goto);
   });
 
   const skillOpts = '<option value="">— no skill column —</option>' +
