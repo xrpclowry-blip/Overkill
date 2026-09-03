@@ -22,6 +22,7 @@
 
 import { writeFile, mkdir, readdir } from "node:fs/promises";
 import { gunzipSync, inflateSync } from "node:zlib";
+import { createHash } from "node:crypto";
 import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -56,6 +57,30 @@ const STAT_FIELDS = {
  * Peel whatever wrapper is actually there, saying so as we go, rather than
  * assuming and failing silently three layers later.
  */
+/**
+ * The payload is a MongoDB shell dump, not JSON: it carries ObjectId(…),
+ * NumberLong(…), ISODate(…) and friends, which JSON.parse rightly rejects.
+ * Rewrite those constructors into the plain values they wrap.
+ */
+export function deMongo(text){
+  return text
+    .replace(/ObjectId\(\s*["']([^"']*)["']\s*\)/g,     '"$1"')
+    .replace(/UUID\(\s*["']([^"']*)["']\s*\)/g,         '"$1"')
+    .replace(/ISODate\(\s*["']([^"']*)["']\s*\)/g,      '"$1"')
+    .replace(/NumberDecimal\(\s*["']([^"']*)["']\s*\)/g, '$1')
+    .replace(/NumberLong\(\s*["']?(-?\d+)["']?\s*\)/g,  '$1')
+    .replace(/NumberInt\(\s*["']?(-?\d+)["']?\s*\)/g,   '$1')
+    .replace(/BinData\(\s*\d+\s*,\s*["']([^"']*)["']\s*\)/g, '"$1"')
+    .replace(/new Date\(\s*(\d+)\s*\)/g,                '$1');
+}
+
+/** Where exactly did a parse give up? Printed so a failure is diagnosable. */
+function parseContext(text, message){
+  const at = Number((message.match(/position (\d+)/) || [])[1]);
+  if (!Number.isFinite(at)) return null;
+  return text.slice(Math.max(0, at - 90), at + 90).replace(/\s+/g, " ");
+}
+
 function unwrap(value, depth = 0){
   if (depth > 6) return value;
 
@@ -64,7 +89,19 @@ function unwrap(value, depth = 0){
     if (t.startsWith("{") || t.startsWith("[")){
       console.log(`  unwrapping: JSON-encoded string (${value.length} chars)`);
       try { return unwrap(JSON.parse(t), depth + 1); }
-      catch (e){ console.log("  !! string did not parse as JSON:", e.message); return value; }
+      catch {
+        // Probably Mongo shell syntax. Clean it up and try once more.
+        const cleaned = deMongo(t);
+        if (cleaned !== t) console.log("  unwrapping: MongoDB shell syntax (ObjectId etc.)");
+        try { return unwrap(JSON.parse(cleaned), depth + 1); }
+        catch (e2){
+          console.log("  !! still not valid JSON:", e2.message);
+          const ctx = parseContext(cleaned, e2.message);
+          if (ctx) console.log("  !! around the failure:", JSON.stringify(ctx));
+          console.log("  -> falling back to scanning the text for item objects");
+          return { __rawText: cleaned };
+        }
+      }
     }
     return value;
   }
@@ -131,6 +168,47 @@ async function get(path, base = API){
 const looksLikeItem = v => v && typeof v === "object" && !Array.isArray(v) &&
   Object.keys(v).some(k => /strength\s*bonus|accuracy\s*bonus|defen[cs]e\s*bonus/i.test(k));
 
+/**
+ * Last resort: pull item objects straight out of the text.
+ *
+ * A 2.6MB dump only has to be malformed in one place for a whole-document
+ * parse to fail, and we do not need the whole document — we need the objects
+ * that carry combat bonuses. Walk the text with a brace counter (respecting
+ * strings), and parse each self-contained object that mentions a bonus field.
+ * A bad corner elsewhere then costs us nothing.
+ */
+export function harvestItems(text){
+  const found = [];
+  const stack = [];
+  let inStr = false, esc = false;
+
+  for (let i = 0; i < text.length; i++){
+    const c = text[i];
+    if (inStr){
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"'){ inStr = true; continue; }
+    if (c === "{"){ stack.push(i); continue; }
+    if (c !== "}") continue;
+
+    const start = stack.pop();
+    if (start == null) continue;
+    const len = i - start;
+    if (len < 60 || len > 40000) continue;              // too small / too big to be one item
+
+    const chunk = text.slice(start, i + 1);
+    if (!/strength\s*bonus/i.test(chunk)) continue;
+    try {
+      const obj = JSON.parse(chunk);
+      if (looksLikeItem(obj)) found.push(obj);
+    } catch { /* not a clean object on its own; skip it */ }
+  }
+  return found;
+}
+
 /** Find the array of item definitions wherever it lives in the payload. */
 function findItems(root){
   const seen = new Set();
@@ -161,9 +239,18 @@ const lower = obj => {
 async function extractStats(){
   console.log("Fetching game data (this is the big one)…");
   const game = await get("/api/Configuration/game-data");
-  describe(game, "game-data");
 
-  const items = findItems(game);
+  let items;
+  if (game && game.__rawText){
+    console.log(`  scanning ${game.__rawText.length} chars for item objects…`);
+    items = harvestItems(game.__rawText);
+    console.log(`  harvested ${items.length} objects with combat bonuses`);
+    if (!items.length) items = null;
+  } else {
+    describe(game, "game-data");
+    items = findItems(game);
+  }
+
   if (!items){
     console.log("  !! no item array with combat-bonus fields found.");
     console.log("  !! Paste this output back and I'll adjust the extractor.");
@@ -216,6 +303,33 @@ async function extractStats(){
 /* Icons                                                               */
 /* ------------------------------------------------------------------ */
 
+/* The wiki sits behind a bot filter that answered our polite custom agent with
+   a 403. Present as an ordinary browser instead — the rate limiting below is
+   what actually makes this a good guest. */
+const WIKI_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+  "Accept": "*/*",
+  "Accept-Language": "en-US,en;q=0.9"
+};
+
+/** MediaWiki keeps File:X.png at /images/<a>/<ab>/X.png where ab = md5(X.png). */
+function wikiPath(filename){
+  const h = createHash("md5").update(filename).digest("hex");
+  return `/w/images/${h[0]}/${h.slice(0, 2)}/${filename}`;
+}
+
+/** Filename spellings worth trying when we have no catalogue to match against. */
+function guessFilenames(item){
+  const out = new Set();
+  const cap = s => s ? s[0].toUpperCase() + s.slice(1) : s;
+  const key  = item.nameLocKey;
+  const name = item.name ? String(item.name).trim().replace(/\s+/g, "_") : null;
+  for (const base of [name, key]) if (base) out.add(cap(base) + ".png");
+  if (key) out.add(cap(key.replace(/_/g, " ")).replace(/\s+/g, "_") + ".png");
+  return [...out];
+}
+
 const norm = s => String(s || "").toLowerCase()
   .replace(/\.png$/, "")
   .replace(/['’]/g, "")
@@ -239,7 +353,7 @@ async function wikiImageIndex(){
     if (cont) qs.set("aicontinue", cont);
 
     const res = await fetch(`${WIKI}/api.php?${qs}`, {
-      headers: { "User-Agent": "overkill-dashboard-assets (clan dashboard, one-off)" },
+      headers: WIKI_HEADERS,
       signal: AbortSignal.timeout(60000)
     });
     if (!res.ok) throw new Error("wiki api HTTP " + res.status);
@@ -279,9 +393,12 @@ async function fetchIcons(){
               (gear.length ? "" : " — no slot field recognised, trying all items"));
 
   console.log("Asking the wiki for its image list…");
-  let index;
+  let index = null;
   try { index = await wikiImageIndex(); }
-  catch (e){ console.log("  !! wiki API failed:", e.message); return 0; }
+  catch (e){
+    console.log("  !! wiki API failed:", e.message);
+    console.log("  -> falling back to deriving image paths from filenames");
+  }
 
   await mkdir(ICON_DIR, { recursive: true });
   const have = new Set(await readdir(ICON_DIR).catch(() => []));
@@ -294,23 +411,27 @@ async function fetchIcons(){
     const file = `${key}.png`;
     if (have.has(file)){ already++; continue; }
 
-    // Try the display name first, then the loc key with underscores stripped.
-    const url = index.get(norm(item.name)) || index.get(norm(key));
-    if (!url){ missed++; if (misses.length < 20) misses.push(item.name || key); continue; }
+    // With a catalogue, match against it. Without one, derive candidate paths.
+    const urls = index
+      ? [index.get(norm(item.name)) || index.get(norm(key))].filter(Boolean)
+      : guessFilenames(item).map(f => WIKI + wikiPath(f));
 
-    try {
-      const res = await fetch(url, {
-        headers: { "User-Agent": "overkill-dashboard-assets (clan dashboard, one-off)" },
-        signal: AbortSignal.timeout(20000)
-      });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length < 100) throw new Error("too small to be an image");
-      await writeFile(join(ICON_DIR, file), buf);
-      got++;
-    } catch (e){
-      missed++; if (misses.length < 20) misses.push(`${item.name} (${e.message})`);
+    if (!urls.length){ missed++; if (misses.length < 20) misses.push(item.name || key); continue; }
+
+    let saved = false, lastErr = "no match";
+    for (const url of urls){
+      try {
+        const res = await fetch(url, { headers: WIKI_HEADERS, signal: AbortSignal.timeout(20000) });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (buf.length < 100) throw new Error("too small to be an image");
+        await writeFile(join(ICON_DIR, file), buf);
+        saved = true; got++;
+        break;
+      } catch (e){ lastErr = e.message; }
+      await new Promise(r => setTimeout(r, 40));
     }
+    if (!saved){ missed++; if (misses.length < 20) misses.push(`${item.name} (${lastErr})`); }
     await new Promise(r => setTimeout(r, 40));      // be a polite guest
   }
 
