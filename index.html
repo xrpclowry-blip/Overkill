@@ -173,6 +173,50 @@ input[type="search"]{min-width:180px}
 .seg button[aria-pressed="true"]{background:var(--surface-3);color:var(--text-primary)}
 
 /* ---------- misc ---------- */
+/* Paper doll: slots laid out roughly where they sit on a character. */
+.doll{
+  display:grid;gap:6px;
+  grid-template-columns:repeat(4,minmax(58px,74px));
+  grid-template-areas:
+    "ammo  pet   head  cape"
+    "ear   right body  left"
+    "amul  glove legs  belt"
+    "ring  .     boots ."
+    "brac  .     .     .";
+}
+.slot{
+  background:var(--surface-2);border:1px solid var(--border-soft);border-radius:8px;
+  padding:6px 4px 5px;text-align:center;min-height:66px;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+}
+.slot.empty{opacity:.35;border-style:dashed}
+.slot img{width:30px;height:30px;object-fit:contain;image-rendering:auto}
+.slot .ph{
+  width:30px;height:30px;border-radius:6px;background:#ffffff0d;
+  display:grid;place-items:center;font-size:12px;font-weight:700;color:var(--text-muted);
+}
+.slot .sl{font-size:9.5px;color:var(--text-muted);line-height:1.15;
+  text-transform:uppercase;letter-spacing:.03em}
+.slot .nm{font-size:10px;color:var(--text-secondary);line-height:1.15;
+  overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.bonus{background:var(--surface-2);border:1px solid var(--border-soft);
+  border-radius:8px;padding:10px 12px;margin-bottom:8px}
+.bonus h4{margin:0 0 7px;font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;
+  color:var(--text-secondary);font-weight:600}
+.bonus .row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center}
+.bonus .row div span{display:block;font-size:9.5px;color:var(--text-muted);
+  text-transform:uppercase;letter-spacing:.05em}
+.bonus .row div b{font-size:16px;font-variant-numeric:tabular-nums}
+.sect{font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);
+  font-weight:600;margin:0 0 8px}
+.kv{display:grid;grid-template-columns:1fr auto;gap:2px 10px;font-size:12.5px}
+.kv .k2{color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kv .v2{color:var(--text-secondary);font-variant-numeric:tabular-nums;text-align:right}
+.kv .v2.strong{color:var(--text-primary);font-weight:600}
+.chipwrap{display:flex;flex-wrap:wrap;gap:5px}
+.up{background:var(--surface-2);border:1px solid var(--border-soft);border-radius:6px;
+  padding:3px 8px;font-size:11.5px;color:var(--text-secondary)}
+.up b{color:var(--text-primary)}
 .skillgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:6px}
 .sk{background:var(--surface-2);border:1px solid var(--border-soft);border-radius:8px;padding:7px 9px}
 .sk .n{font-size:11px;color:var(--text-muted)}
@@ -321,7 +365,25 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
       <h2 id="memberName">Member</h2>
       <p class="hint" id="memberMeta"></p>
       <div class="chart" id="memberChart" style="margin-bottom:16px"></div>
+
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr));margin-bottom:16px">
+        <div>
+          <div class="sect">Equipment</div>
+          <div class="doll" id="memberGear"></div>
+        </div>
+        <div>
+          <div class="sect">Combat bonuses</div>
+          <div id="memberBonus" hidden></div>
+          <div class="sect" style="margin-top:14px">Boss and raid completions</div>
+          <div id="memberPvm"></div>
+        </div>
+      </div>
+
+      <div class="sect">Skills</div>
       <div class="skillgrid" id="memberSkills"></div>
+
+      <div class="sect" style="margin-top:16px">Upgrades</div>
+      <div id="memberUpgrades"></div>
     </div>
   </section>
 
@@ -1028,7 +1090,11 @@ async function loadAll(){
   ]);
 
   state.items.clear();
-  (items || []).forEach(it => state.items.set(String(it.name).toLowerCase(), it));
+  state.itemById = new Map();
+  (items || []).forEach(it => {
+    state.items.set(String(it.name).toLowerCase(), it);
+    state.itemById.set(it.id, it);
+  });
   state.prices.clear();
   (prices || []).forEach(p => state.prices.set(p.itemId, p));
   state.xp[24] = xp24; state.xp[168] = xp168;
@@ -1257,8 +1323,14 @@ function showMember(name){
   $("#memberPanel").hidden = false;
   $("#memberName").textContent = m.name;
   const v = state.vault && state.vault.members.find(x => x.name === name);
+  const acctDays = m.profile ? daysSince(m.profile.creationDate) : null;
+  const prev = (m.profile && m.profile.previousNames) || [];
   $("#memberMeta").innerHTML = [
     RANKS[m.rank] || "Member",
+    m.gameMode && m.gameMode !== "default" ? esc(m.gameMode) : "",
+    acctDays ? `account ${Math.floor(acctDays/365) >= 1
+        ? (acctDays/365).toFixed(1) + " years old" : Math.round(acctDays) + " days old"}` : "",
+    prev.length ? `formerly ${prev.slice(0,3).map(esc).join(", ")}` : "",
     m.missing ? "profile unavailable" : `total level ${num(m.totalLevel)} · ${abbr(m.totalXp)} xp`,
     `${abbr(m.xp168)} xp this week`,
     m.offline == null ? "" : `last seen ${ago(m.offline)} ago${m.lastTask ? ` (${esc(m.lastTask)})` : ""}`,
@@ -1274,8 +1346,122 @@ function showMember(name){
         <div style="height:100%;width:${(s.progress*100).toFixed(1)}%;background:${s.level >= MAX_LEVEL ? "#c98500" : C1}"></div>
       </div>
     </div>`).join("");
+  renderMemberDetail(m);
   if (typeof loadMemberTimeline === "function") loadMemberTimeline(name);
   $("#memberPanel").scrollIntoView({ behavior:"smooth", block:"nearest" });
+}
+
+/* Equipment slots in the order a player would read them down a character sheet. */
+const GEAR_SLOTS = [
+  ["ammunition","Arrow","ammo"], ["pet","Pet","pet"], ["head","Helmet","head"], ["cape","Cape","cape"],
+  ["earrings","Earring","ear"], ["rightHand","Right hand","right"], ["body","Chest","body"],
+  ["leftHand","Left hand","left"], ["amulet","Amulet","amul"], ["gloves","Gloves","glove"],
+  ["legs","Legs","legs"], ["belt","Belt","belt"], ["jewellery","Ring","ring"],
+  ["boots","Boots","boots"], ["bracelet","Bracelet","brac"]
+];
+
+/* Nine bonuses, grouped the way the game presents them. */
+const BONUS_GROUPS = [
+  ["Melee",  ["meleeStr","meleeAcc","meleeDef"]],
+  ["Ranged", ["rangeStr","rangeAcc","rangeDef"]],
+  ["Magic",  ["magicStr","magicAcc","magicDef"]]
+];
+const BONUS_LABEL = { meleeStr:"str", meleeAcc:"acc", meleeDef:"def",
+  rangeStr:"str", rangeAcc:"acc", rangeDef:"def",
+  magicStr:"str", magicAcc:"acc", magicDef:"def" };
+
+/* Optional sidecar built by scripts/assets.mjs. Absent is fine — the panels
+   just don't render. */
+async function loadItemStats(){
+  if (state.itemStats !== undefined) return state.itemStats;
+  state.itemStats = null;
+  if (location.protocol === "file:") return null;
+  try {
+    const res = await fetch("./data/item-stats.json", { cache:"no-store" });
+    if (res.ok){
+      const doc = await res.json();
+      if (doc && doc.stats) state.itemStats = doc.stats;
+    }
+  } catch { /* no sidecar committed yet */ }
+  return state.itemStats;
+}
+
+/* Bosses that are also Clan Cup objectives — worth flagging, since a member's
+   kills there feed a standing the clan actually competes on. */
+const CUP_BOSSES = new Set(["Chimera","Hades","Zeus","Medusa","Griffin","Devil",
+  "Mesines","BloodmoonMassacre","ReckoningOfTheGods"]);
+
+function spaceCase(raw){
+  return String(raw||"").replace(/([a-z0-9])([A-Z])/g,"$1 $2").replace(/^./,c=>c.toUpperCase());
+}
+
+async function renderBonuses(gear){
+  const host = $("#memberBonus");
+  const stats = await loadItemStats();
+  if (!stats){ host.hidden = true; return; }
+  const total = {};
+  for (const id of Object.values(gear || {})){
+    const row = stats[id] || stats[String(id)];
+    if (!row) continue;
+    for (const [k, v] of Object.entries(row)) total[k] = (total[k] || 0) + (Number(v) || 0);
+  }
+  host.hidden = false;
+  host.innerHTML = BONUS_GROUPS.map(([name, keys]) => `
+    <div class="bonus">
+      <h4>${name}</h4>
+      <div class="row">${keys.map(k =>
+        `<div><span>${BONUS_LABEL[k]}</span><b>${num(total[k] || 0)}</b></div>`).join("")}</div>
+    </div>`).join("");
+}
+
+function renderMemberDetail(m){
+  const prof = m.profile;
+  const itemName = id => {
+    const it = state.itemById ? state.itemById.get(id) : null;
+    return it ? (typeof itemLabel === "function" ? itemLabel(it.name) : it.name) : ("item #" + id);
+  };
+
+  const gear = (prof && prof.equipment) || {};
+  $("#memberGear").innerHTML = GEAR_SLOTS.map(([k, lbl, area]) => {
+    const id = gear[k];
+    if (id == null)
+      return `<div class="slot empty" style="grid-area:${area}"><div class="ph">·</div>
+              <div class="sl">${lbl}</div></div>`;
+    const it = state.itemById ? state.itemById.get(id) : null;
+    const key = it && it.nameLocKey ? it.nameLocKey
+              : (it && it.name ? String(it.name).toLowerCase().replace(/\s+/g,"_") : null);
+    const nm = itemName(id);
+    // The icon is a bonus, not a requirement: if the file isn't there the
+    // placeholder stays and the name still tells you what it is.
+    const art = key
+      ? `<img src="data/icons/${encodeURIComponent(key)}.png" alt="" loading="lazy"
+             onerror="this.replaceWith(Object.assign(document.createElement('div'),
+                      {className:'ph',textContent:'${esc((nm[0]||'?').toUpperCase())}'}))">`
+      : `<div class="ph">${esc((nm[0]||"?").toUpperCase())}</div>`;
+    return `<div class="slot" style="grid-area:${area}" title="${esc(nm)}">
+              ${art}<div class="sl">${lbl}</div><div class="nm">${esc(nm)}</div></div>`;
+  }).join("");
+
+  renderBonuses(gear);
+
+  const pvm = Object.entries((prof && prof.pvmStats) || {})
+    .filter(([,v]) => v > 0).sort((a,b) => b[1] - a[1]);
+  const totalKills = pvm.reduce((s,[,v]) => s + v, 0);
+  $("#memberPvm").innerHTML = pvm.length
+    ? `<div class="kv">${pvm.map(([k,v]) =>
+        `<div class="k2">${esc(spaceCase(k))}${CUP_BOSSES.has(k)
+            ? ' <span class="pill deputy" title="counts toward a Clan Cup objective">cup</span>' : ""}</div>
+         <div class="v2 ${v >= 1000 ? "strong" : ""}">${num(v)}</div>`).join("")}
+       </div>
+       <div class="hint" style="margin:10px 0 0">${num(totalKills)} total across ${pvm.length} encounters</div>`
+    : '<div class="empty" style="padding:10px 0">No boss kills recorded.</div>';
+
+  const ups = Object.entries((prof && prof.upgrades) || {})
+    .filter(([,v]) => v > 0).sort((a,b) => b[1] - a[1]);
+  $("#memberUpgrades").innerHTML = ups.length
+    ? `<div class="chipwrap">${ups.map(([k,v]) =>
+        `<span class="up">${esc(spaceCase(k))} <b>${num(v)}</b></span>`).join("")}</div>`
+    : '<div class="empty" style="padding:10px 0">No upgrades reported.</div>';
 }
 
 /* =====================================================================
