@@ -587,13 +587,34 @@ async function extractUpgrades(game){
   if (firstObj) console.log("  fields on a sample entry:", Object.keys(firstObj[1]).join(", "));
   else console.log("  sample entry:", JSON.stringify(entries[0] && entries[0][1]).slice(0, 200));
 
+  /* Print entries verbatim. Guessing at this shape from field names alone has
+     now failed three times; a couple of real rows settles it in one run.
+     Long arrays are summarised so the log stays readable. */
+  const preview = v => JSON.stringify(v, (k, val) =>
+    Array.isArray(val) && val.length > 4
+      ? `[${val.length} items: ${JSON.stringify(val.slice(0, 3))}…]`
+      : val);
+  entries.slice(0, 3).forEach(([, v], i) => {
+    if (isObj(v)) console.log(`  ENTRY ${i}: ${preview(v).slice(0, 900)}`);
+  });
+
   const out = {};
-  let withMax = 0, noMax = 0;
+  let withMax = 0, noMax = 0, flavourOnly = 0;
+  const flavourSamples = [];
   const unresolved = [];
 
   /* Loc keys arrive per tier: "keep_it_spacious_tier_1" names one tier, not the
      upgrade. Strip the tier suffix so the whole thing reads as one upgrade. */
-  const stripTier = t => String(t).replace(/[_\s-]*tier[_\s-]*\d+$/i, "").replace(/[_\s-]\d+$/, "");
+  /* Tier loc keys come in two flavours:
+       "toolbelt_upgrade_tier_1_name"  -> the upgrade's own name, decorated
+       "cardboard_box"                 -> flavour text for that tier only
+     Strip the decoration; the second kind is unusable as identity and is
+     reported rather than trusted. */
+  const stripTier = t => String(t)
+    .replace(/[_\s-]*(name|title|label)$/i, "")
+    .replace(/[_\s-]*tier[_\s-]*\d+$/i, "")
+    .replace(/[_\s-]\d+$/, "");
+  const decorated = t => /[_\s-]*tier[_\s-]*\d+([_\s-]*(name|title|label))?$/i.test(String(t));
 
   const longest = (...arrays) => arrays.reduce(
     (n, a) => Array.isArray(a) && a.length > n ? a.length : n, 0);
@@ -608,7 +629,15 @@ async function extractUpgrades(game){
       const type = m.get("type");
       const locs = m.get("tiernamelockeys");
       if (typeof type === "string" && type.trim()) name = type;
-      else if (Array.isArray(locs) && typeof locs[0] === "string") name = stripTier(locs[0]);
+      // Only trust a tier loc key when it's decorated with a tier marker —
+      // otherwise it's this tier's flavour name ("Cardboard box" is Housing
+      // tier 1), which would file the upgrade under the wrong identity.
+      else if (Array.isArray(locs) && typeof locs[0] === "string" && decorated(locs[0]))
+        name = stripTier(locs[0]);
+      else if (Array.isArray(locs) && typeof locs[0] === "string"){
+        flavourOnly++;
+        if (flavourSamples.length < 6) flavourSamples.push(locs[0]);
+      }
       else if (Number.isFinite(Number(type)) && Array.isArray(locs) && typeof locs[0] === "string")
         name = stripTier(locs[0]);
       else if (key) name = key;
@@ -647,6 +676,8 @@ async function extractUpgrades(game){
   }
 
   console.log(`  ${withMax} with a max level, ${noMax} without`);
+  if (flavourOnly) console.log(`  ${flavourOnly} had only per-tier flavour names, no usable identity: ${
+    flavourSamples.join(", ")}`);
   if (unresolved.length) console.log("  no max found for:", unresolved.join(", "));
   const sample = Object.entries(out).slice(0, 6)
     .map(([k, v]) => `${k}${v.max ? "/" + v.max : " (no max)"}`).join(", ");
@@ -674,6 +705,59 @@ async function extractUpgrades(game){
   return withMax;
 }
 
+/* ------------------------------------------------------------------ */
+/* Skill icons                                                         */
+/* ------------------------------------------------------------------ */
+
+/* The wiki files them under the game's internal asset names, which match the
+   display names for every skill except attack, stored as "Rigour". */
+const SKILL_ICONS = [
+  ["attack","Rigour"], ["strength","Strength"], ["defence","Defence"],
+  ["archery","Archery"], ["magic","Magic"], ["health","Health"],
+  ["woodcutting","Woodcutting"], ["carpentry","Carpentry"], ["fishing","Fishing"],
+  ["cooking","Cooking"], ["mining","Mining"], ["smithing","Smithing"],
+  ["foraging","Foraging"], ["farming","Farming"], ["crafting","Crafting"],
+  ["agility","Agility"], ["plundering","Plundering"], ["enchanting","Enchanting"],
+  ["brewing","Brewing"], ["exterminating","Exterminating"], ["invocation","Invocation"]
+];
+
+async function fetchSkillIcons(){
+  console.log("\nFetching skill icons…");
+  await mkdir(ICON_DIR, { recursive: true });
+  const have = new Set(await readdir(ICON_DIR).catch(() => []));
+
+  let got = 0, already = 0;
+  const missed = [];
+
+  for (const [key, asset] of SKILL_ICONS){
+    const file = `skill-${key}.png`;
+    if (have.has(file)){ already++; continue; }
+
+    // The asset name first, then the display name, then a lowercase variant.
+    const names = [...new Set([`${asset}.png`, `${asset}_icon.png`,
+      `${key[0].toUpperCase() + key.slice(1)}.png`])];
+    let saved = false;
+    for (const n of names){
+      try {
+        const res = await fetch(WIKI + wikiPath(n), { headers: WIKI_HEADERS,
+          signal: AbortSignal.timeout(20000) });
+        if (!res.ok) continue;
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (buf.length < 100) continue;
+        await writeFile(join(ICON_DIR, file), buf);
+        saved = true; got++;
+        break;
+      } catch { /* next spelling */ }
+      await new Promise(r => setTimeout(r, 60));
+    }
+    if (!saved) missed.push(key);
+  }
+
+  console.log(`  downloaded ${got}, already had ${already}, no image for ${missed.length}`);
+  if (missed.length) console.log("  no icon for:", missed.join(", "));
+  return got + already;
+}
+
 async function main(){
   const needGame = !process.env.SKIP_STATS || !process.env.SKIP_UPGRADES;
   let game = null;
@@ -686,11 +770,13 @@ async function main(){
   const stats = process.env.SKIP_STATS    ? null : await extractStats(game);
   const ups   = process.env.SKIP_UPGRADES ? null : await extractUpgrades(game);
   const icons = process.env.SKIP_ICONS    ? null : await fetchIcons();
+  const sicons = process.env.SKIP_ICONS   ? null : await fetchSkillIcons();
 
   console.log("\nDone.");
   if (stats != null) console.log(`  ${stats} items have combat bonuses`);
   if (ups   != null) console.log(`  ${ups} upgrades with a known maximum`);
-  if (icons != null) console.log(`  ${icons} icons available`);
+  if (icons != null) console.log(`  ${icons} item icons available`);
+  if (sicons != null) console.log(`  ${sicons} of ${SKILL_ICONS.length} skill icons available`);
   console.log("  Commit data/ and the dashboard picks it all up.");
 }
 
