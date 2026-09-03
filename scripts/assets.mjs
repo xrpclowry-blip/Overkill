@@ -495,6 +495,11 @@ const MAX_FIELDS  = ["maxlevel", "maxtier", "maxupgradelevel", "maxlevels",
 /* Arrays whose length IS the number of levels, when no explicit max exists. */
 const LEVEL_ARRAYS = ["levels", "tiers", "costs", "upgradelevels", "levelcosts",
                       "requirements", "prices"];
+/* The game groups upgrades (Skilling / Combat / Pets) and shows a description
+   for each; carry both through when the data has them. */
+const CAT_FIELDS  = ["category", "upgradecategory", "group", "type", "section"];
+const DESC_FIELDS = ["description", "descriptionlocalizationkey", "desclockey",
+                     "tooltip", "effect"];
 
 /** The member profile spells these many ways; reduce both sides to one form. */
 export function upgradeKey(raw){
@@ -527,20 +532,51 @@ async function extractUpgrades(game){
     return null;
   }
 
-  // Find it by name, then fall back to any node that looks like a catalogue.
-  let node = null, where = null;
+  // Find the section, then descend to the actual list inside it. The payload
+  // wraps collections one level down — Upgrades is { Id, Items: [...] }, the
+  // same shape as Items — so iterating the wrapper yields "Id" and "Items"
+  // as if they were upgrades, which is exactly what went wrong first time.
+  let section = null, where = null;
   for (const [k, v] of Object.entries(game)){
-    if (/upgrade/i.test(k) && v && typeof v === "object"){ node = v; where = k; break; }
+    if (/upgrade/i.test(k) && v && typeof v === "object"){ section = v; where = k; break; }
   }
-  if (!node){ console.log("  !! no top-level key matching /upgrade/i."); return null; }
+  if (!section){ console.log("  !! no top-level key matching /upgrade/i."); return null; }
 
-  // It may be an array of definitions, or a map of key -> definition.
-  const entries = Array.isArray(node)
-    ? node.map((v, i) => [null, v, i])
-    : Object.entries(node).map(([k, v]) => [k, v, null]);
-  console.log(`  ${where}: ${Array.isArray(node) ? "array" : "object"}, ${entries.length} entries`);
+  const isObj = v => v && typeof v === "object" && !Array.isArray(v);
 
-  const firstObj = entries.find(([, v]) => v && typeof v === "object" && !Array.isArray(v));
+  /** Largest array of objects anywhere in this subtree — that's the list. */
+  function biggestList(node, path, seen = new Set()){
+    let best = null;
+    const walk = (n, p) => {
+      if (!n || typeof n !== "object" || seen.has(n)) return;
+      seen.add(n);
+      if (Array.isArray(n)){
+        const objs = n.filter(isObj).length;
+        if (objs && (!best || objs > best.n)) best = { list:n, path:p, n:objs };
+        n.forEach((v, i) => { if (i < 50) walk(v, `${p}[${i}]`); });
+        return;
+      }
+      for (const [k, v] of Object.entries(n)) walk(v, `${p}.${k}`);
+    };
+    walk(node, path);
+    return best;
+  }
+
+  let entries, shape;
+  const list = biggestList(section, "$." + where);
+  if (list && list.n >= 3){
+    entries = list.list.map((v, i) => [null, v, i]);
+    shape = `array at ${list.path}`;
+  } else if (isObj(section)){
+    entries = Object.entries(section).map(([k, v]) => [k, v, null]);
+    shape = "map of key -> definition";
+  } else {
+    console.log("  !! could not find a list of upgrades inside", where);
+    return null;
+  }
+  console.log(`  ${where}: ${shape}, ${entries.length} entries`);
+
+  const firstObj = entries.find(([, v]) => isObj(v));
   if (firstObj) console.log("  fields on a sample entry:", Object.keys(firstObj[1]).join(", "));
   else console.log("  sample entry:", JSON.stringify(entries[0] && entries[0][1]).slice(0, 200));
 
@@ -571,12 +607,27 @@ async function extractUpgrades(game){
     const id = upgradeKey(name || key);
     if (!id) continue;
     out[id] = { name: upgradeTitle(name || key) };
+    if (val && typeof val === "object" && !Array.isArray(val)){
+      const m = new Map(Object.entries(val).map(([k, v]) => [k.toLowerCase(), v]));
+      const cat  = pick(m, CAT_FIELDS);
+      const desc = pick(m, DESC_FIELDS);
+      if (typeof cat  === "string" && cat)  out[id].cat  = upgradeTitle(cat);
+      if (typeof desc === "string" && desc) out[id].desc = desc;
+    }
     if (max != null && max > 0){ out[id].max = max; withMax++; }
     else { noMax++; if (unresolved.length < 12) unresolved.push(String(name || key)); }
   }
 
   console.log(`  ${withMax} with a max level, ${noMax} without`);
   if (unresolved.length) console.log("  no max found for:", unresolved.join(", "));
+  const sample = Object.entries(out).slice(0, 6)
+    .map(([k, v]) => `${k}${v.max ? "/" + v.max : " (no max)"}`).join(", ");
+  console.log("  sample of what was written:", sample);
+  const cats = [...new Set(Object.values(out).map(v => v.cat).filter(Boolean))];
+  console.log(cats.length ? `  categories found: ${cats.join(", ")}`
+                          : "  no category field found — the list will render ungrouped");
+  const withDesc = Object.values(out).filter(v => v.desc).length;
+  console.log(`  ${withDesc} have a description`);
 
   await mkdir(dirname(OUT_UPGRADES), { recursive: true });
   await writeFile(OUT_UPGRADES, JSON.stringify({
