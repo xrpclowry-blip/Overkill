@@ -33,20 +33,6 @@ const ICON_DIR = resolve(ROOT, "data/icons");
 const API  = process.env.API_BASE  || "https://query.idleclans.com";
 const WIKI = process.env.WIKI_BASE || "https://idleclans.wiki";
 
-/* The nine numbers the paper doll shows, and the field names worth trying.
-   Matching is case-insensitive; whatever hits gets reported on stdout. */
-const STAT_FIELDS = {
-  meleeStr : ["StrengthBonus", "MeleeStrengthBonus"],
-  meleeAcc : ["AccuracyBonus", "MeleeAccuracyBonus"],
-  meleeDef : ["DefenceBonus", "MeleeDefenceBonus", "Defense Bonus"],
-  rangeStr : ["ArcheryStrengthBonus", "RangedStrengthBonus"],
-  rangeAcc : ["ArcheryAccuracyBonus", "RangedAccuracyBonus"],
-  rangeDef : ["ArcheryDefenceBonus", "RangedDefenceBonus"],
-  magicStr : ["MagicStrengthBonus"],
-  magicAcc : ["MagicAccuracyBonus"],
-  magicDef : ["MagicDefenceBonus"]
-};
-
 /* ------------------------------------------------------------------ */
 /* Payload unwrapping                                                   */
 /* ------------------------------------------------------------------ */
@@ -165,8 +151,29 @@ async function get(path, base = API){
 /* Stats                                                               */
 /* ------------------------------------------------------------------ */
 
+/* A bonus field on a piece of EQUIPMENT. The leading (?!enemy) matters: boss
+   definitions carry EnemyStrengthBonus and friends, and matching those is how
+   the first run latched onto ClanBossInfos and extracted three monsters. */
+const BONUS_KEY = /^(?!enemy)(melee|archery|ranged?|magic)?(strength|accuracy|defen[cs]e)bonus$/i;
+
+const tidy = k => String(k).replace(/\s+/g, "");
+
 const looksLikeItem = v => v && typeof v === "object" && !Array.isArray(v) &&
-  Object.keys(v).some(k => /strength\s*bonus|accuracy\s*bonus|defen[cs]e\s*bonus/i.test(k));
+  Object.keys(v).some(k => BONUS_KEY.test(tidy(k)));
+
+/* Resolved by pattern rather than a fixed list of spellings, so a rename of
+   Archery -> Ranged (or Defence -> Defense) doesn't silently zero a column. */
+const STAT_PATTERNS = {
+  meleeStr : /^(melee)?strengthbonus$/i,
+  meleeAcc : /^(melee)?accuracybonus$/i,
+  meleeDef : /^(melee)?defen[cs]ebonus$/i,
+  rangeStr : /^(archery|ranged?)strengthbonus$/i,
+  rangeAcc : /^(archery|ranged?)accuracybonus$/i,
+  rangeDef : /^(archery|ranged?)defen[cs]ebonus$/i,
+  magicStr : /^magicstrengthbonus$/i,
+  magicAcc : /^magicaccuracybonus$/i,
+  magicDef : /^magicdefen[cs]ebonus$/i
+};
 
 /**
  * Last resort: pull item objects straight out of the text.
@@ -213,21 +220,29 @@ export function harvestItems(text){
 function findItems(root){
   const seen = new Set();
   const queue = [[root, "$"]];
+  const found = [];
+
+  // Collect every plausible array, then take the richest. Stopping at the
+  // first match is what picked 3 bosses over 1000 items last time.
   while (queue.length){
     const [node, path] = queue.shift();
     if (!node || typeof node !== "object" || seen.has(node)) continue;
     seen.add(node);
     if (Array.isArray(node)){
-      if (node.some(looksLikeItem)){
-        console.log(`  item array found at ${path}`);
-        return node;
-      }
+      const n = node.filter(looksLikeItem).length;
+      if (n) found.push({ node, path, n });
       node.forEach((v, i) => { if (i < 400) queue.push([v, `${path}[${i}]`]); });
       continue;
     }
     for (const [k, v] of Object.entries(node)) queue.push([v, `${path}.${k}`]);
   }
-  return null;
+
+  if (!found.length) return null;
+  found.sort((a, b) => b.n - a.n);
+  console.log("  candidate arrays: " +
+    found.slice(0, 6).map(c => `${c.path} (${c.n})`).join(", "));
+  console.log(`  using ${found[0].path}`);
+  return found[0].node;
 }
 
 const lower = obj => {
@@ -261,11 +276,16 @@ async function extractStats(){
   const sample = items.find(looksLikeItem) || items[0];
   console.log("  fields on a sample item:", Object.keys(sample).join(", "));
 
+  // Union of field names across many items — one sample can be missing a column.
+  const allKeys = new Set();
+  for (const it of items.slice(0, 400)){
+    if (it && typeof it === "object") for (const k of Object.keys(it)) allKeys.add(tidy(k).toLowerCase());
+  }
+
   const resolved = {}, missing = [];
-  const first = lower(sample);
-  for (const [slot, names] of Object.entries(STAT_FIELDS)){
-    const hit = names.find(n => first.has(n.toLowerCase().replace(/\s+/g, "")));
-    if (hit) resolved[slot] = hit.toLowerCase().replace(/\s+/g, ""); else missing.push(slot);
+  for (const [slot, pattern] of Object.entries(STAT_PATTERNS)){
+    const hit = [...allKeys].find(k => pattern.test(k));
+    if (hit) resolved[slot] = hit; else missing.push(slot);
   }
   console.log("  matched stat fields:",
     Object.entries(resolved).map(([k, v]) => `${k}=${v}`).join(", ") || "(none)");
@@ -319,15 +339,33 @@ function wikiPath(filename){
   return `/w/images/${h[0]}/${h.slice(0, 2)}/${filename}`;
 }
 
-/** Filename spellings worth trying when we have no catalogue to match against. */
+/**
+ * Filename spellings worth trying when we have no catalogue to match against.
+ * Returns [{ file, note }] — `note` is set for spellings that are a compromise
+ * rather than an exact match, so the run can report how many were used.
+ */
 function guessFilenames(item){
-  const out = new Set();
-  const cap = s => s ? s[0].toUpperCase() + s.slice(1) : s;
-  const key  = item.nameLocKey;
-  const name = item.name ? String(item.name).trim().replace(/\s+/g, "_") : null;
-  for (const base of [name, key]) if (base) out.add(cap(base) + ".png");
-  if (key) out.add(cap(key.replace(/_/g, " ")).replace(/\s+/g, "_") + ".png");
-  return [...out];
+  const out = new Map();
+  const cap  = s => s ? s[0].toUpperCase() + s.slice(1) : s;
+  const file = s => cap(String(s).trim().replace(/\s+/g, "_")) + ".png";
+  const add  = (s, note) => { if (s && !out.has(file(s))) out.set(file(s), note); };
+
+  const name = item.name ? String(item.name).trim() : null;
+  const key  = item.nameLocKey || null;
+
+  add(name);                                    // "Bronze sword"
+  add(key);                                     // "bronze_sword"
+  add(key && key.replace(/_/g, " "));           // "Bronze sword" from the key
+  add(name && name.replace(/['’]/g, ""));       // "Gatherers handbook"
+
+  // Enchanted pieces often share the base item's artwork on the wiki.
+  const base = name && name.replace(/^enchanted\s+/i, "");
+  if (base && base !== name){
+    add(base, "used the un-enchanted item's image");
+    add(base.replace(/['’]/g, ""), "used the un-enchanted item's image");
+  }
+
+  return [...out].map(([f, note]) => ({ file: f, note }));
 }
 
 const norm = s => String(s || "").toLowerCase()
@@ -403,8 +441,8 @@ async function fetchIcons(){
   await mkdir(ICON_DIR, { recursive: true });
   const have = new Set(await readdir(ICON_DIR).catch(() => []));
 
-  let got = 0, already = 0, missed = 0;
-  const misses = [];
+  let got = 0, already = 0, missed = 0, approximate = 0;
+  const misses = [], approxList = [];
 
   for (const item of targets){
     const key  = item.nameLocKey || norm(item.name).replace(/ /g, "_");
@@ -412,21 +450,26 @@ async function fetchIcons(){
     if (have.has(file)){ already++; continue; }
 
     // With a catalogue, match against it. Without one, derive candidate paths.
-    const urls = index
+    const tries = index
       ? [index.get(norm(item.name)) || index.get(norm(key))].filter(Boolean)
-      : guessFilenames(item).map(f => WIKI + wikiPath(f));
+          .map(url => ({ url, note: null }))
+      : guessFilenames(item).map(c => ({ url: WIKI + wikiPath(c.file), note: c.note }));
 
-    if (!urls.length){ missed++; if (misses.length < 20) misses.push(item.name || key); continue; }
+    if (!tries.length){ missed++; if (misses.length < 20) misses.push(item.name || key); continue; }
 
     let saved = false, lastErr = "no match";
-    for (const url of urls){
+    for (const t of tries){
       try {
-        const res = await fetch(url, { headers: WIKI_HEADERS, signal: AbortSignal.timeout(20000) });
+        const res = await fetch(t.url, { headers: WIKI_HEADERS, signal: AbortSignal.timeout(20000) });
         if (!res.ok) throw new Error("HTTP " + res.status);
         const buf = Buffer.from(await res.arrayBuffer());
         if (buf.length < 100) throw new Error("too small to be an image");
         await writeFile(join(ICON_DIR, file), buf);
         saved = true; got++;
+        if (t.note){
+          approximate++;
+          if (approxList.length < 10) approxList.push(`${item.name} (${t.note})`);
+        }
         break;
       } catch (e){ lastErr = e.message; }
       await new Promise(r => setTimeout(r, 40));
@@ -436,6 +479,10 @@ async function fetchIcons(){
   }
 
   console.log(`  downloaded ${got}, already had ${already}, no image for ${missed}`);
+  if (approximate){
+    console.log(`  ${approximate} of those are approximate matches:`);
+    console.log("    " + approxList.join("; "));
+  }
   if (misses.length) console.log("  examples with no image:", misses.join(", "));
   return got + already;
 }
