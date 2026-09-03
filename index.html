@@ -1386,10 +1386,23 @@ async function loadItemStats(){
   return state.itemStats;
 }
 
-/* Bosses that are also Clan Cup objectives — worth flagging, since a member's
-   kills there feed a standing the clan actually competes on. */
-const CUP_BOSSES = new Set(["Chimera","Hades","Zeus","Medusa","Griffin","Devil",
-  "Mesines","BloodmoonMassacre","ReckoningOfTheGods"]);
+/* Which bosses are Clan Cup objectives is read from the live standings, not
+   kept in a list here — the objectives rotate, and a hardcoded set would go
+   quietly wrong the first time they changed. Returns key -> { name, rank }. */
+const CUP_SUFFIX = /(Kills|Completions|Clears|Speed|Time|Score|Best)$/i;
+
+function cupBossMap(){
+  const map = new Map();
+  for (const row of state.cup || []){
+    const raw  = String(row.objective || "");
+    const boss = raw.replace(CUP_SUFFIX, "");
+    if (!boss) continue;
+    const key = boss.toLowerCase();
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push({ name: raw, rank: row.rank });
+  }
+  return map;
+}
 
 function spaceCase(raw){
   return String(raw||"").replace(/([a-z0-9])([A-Z])/g,"$1 $2").replace(/^./,c=>c.toUpperCase());
@@ -1447,13 +1460,24 @@ function renderMemberDetail(m){
   const pvm = Object.entries((prof && prof.pvmStats) || {})
     .filter(([,v]) => v > 0).sort((a,b) => b[1] - a[1]);
   const totalKills = pvm.reduce((s,[,v]) => s + v, 0);
+  const cupBosses = cupBossMap();
+  const badge = k => {
+    const hits = cupBosses.get(String(k).toLowerCase());
+    if (!hits || !hits.length) return "";
+    const ranked = hits.filter(h => h.rank != null).sort((a,b) => a.rank - b.rank);
+    const detail = ranked.length
+      ? ranked.map(h => `${spaceCase(h.name)}: Overkill is #${num(h.rank)}`).join(" · ")
+      : hits.map(h => spaceCase(h.name)).join(" · ");
+    return ` <span class="pill deputy" title="A Clan Cup objective this season — ` +
+           `${esc(detail)}. Your kills here feed the clan's standing.">cup</span>`;
+  };
   $("#memberPvm").innerHTML = pvm.length
     ? `<div class="kv">${pvm.map(([k,v]) =>
-        `<div class="k2">${esc(spaceCase(k))}${CUP_BOSSES.has(k)
-            ? ' <span class="pill deputy" title="counts toward a Clan Cup objective">cup</span>' : ""}</div>
+        `<div class="k2">${esc(spaceCase(k))}${badge(k)}</div>
          <div class="v2 ${v >= 1000 ? "strong" : ""}">${num(v)}</div>`).join("")}
        </div>
-       <div class="hint" style="margin:10px 0 0">${num(totalKills)} total across ${pvm.length} encounters</div>`
+       <div class="hint" style="margin:10px 0 0">${num(totalKills)} total across ${pvm.length} encounters${
+         cupBosses.size ? ' · <b>cup</b> marks a Clan Cup objective this season' : ""}</div>`
     : '<div class="empty" style="padding:10px 0">No boss kills recorded.</div>';
 
   const ups = Object.entries((prof && prof.upgrades) || {})
