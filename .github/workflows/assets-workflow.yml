@@ -26,12 +26,22 @@ jobs:
 
       - name: Commit whatever changed
         run: |
-          if git diff --quiet -- data/; then
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Stage first, then look. Everything this job produces is a NEW file,
+          # and `git diff` on the working tree is blind to untracked files —
+          # checking before staging reports "no changes" and throws the lot away.
+          git add -A data/
+
+          if git diff --cached --quiet; then
             echo "Assets already up to date."
             exit 0
           fi
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/item-stats.json data/icons
+
+          echo "Committing:"
+          git diff --cached --name-status | head -20
+          echo "  … $(git diff --cached --name-only | wc -l) files total"
+
           git commit -m "Rebuild item assets $(date -u +%Y-%m-%d)"
           git push
