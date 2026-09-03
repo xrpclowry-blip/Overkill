@@ -29,6 +29,7 @@ import { fileURLToPath } from "node:url";
 const ROOT     = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT_JSON = resolve(ROOT, "data/item-stats.json");
 const ICON_DIR = resolve(ROOT, "data/icons");
+const OUT_UPGRADES = resolve(ROOT, "data/upgrades.json");
 
 const API  = process.env.API_BASE  || "https://query.idleclans.com";
 const WIKI = process.env.WIKI_BASE || "https://idleclans.wiki";
@@ -251,10 +252,7 @@ const lower = obj => {
   return m;
 };
 
-async function extractStats(){
-  console.log("Fetching game data (this is the big one)…");
-  const game = await get("/api/Configuration/game-data");
-
+async function extractStats(game){
   let items;
   if (game && game.__rawText){
     console.log(`  scanning ${game.__rawText.length} chars for item objects…`);
@@ -262,7 +260,6 @@ async function extractStats(){
     console.log(`  harvested ${items.length} objects with combat bonuses`);
     if (!items.length) items = null;
   } else {
-    describe(game, "game-data");
     items = findItems(game);
   }
 
@@ -487,13 +484,129 @@ async function fetchIcons(){
   return got + already;
 }
 
+/* ------------------------------------------------------------------ */
+/* Upgrades                                                            */
+/* ------------------------------------------------------------------ */
+
+const NAME_FIELDS = ["name", "displayname", "title", "upgradetype",
+                     "namelocalizationkey", "namelockey", "localizationkey"];
+const MAX_FIELDS  = ["maxlevel", "maxtier", "maxupgradelevel", "maxlevels",
+                     "levels", "maxrank", "maxamount", "maxcount"];
+/* Arrays whose length IS the number of levels, when no explicit max exists. */
+const LEVEL_ARRAYS = ["levels", "tiers", "costs", "upgradelevels", "levelcosts",
+                      "requirements", "prices"];
+
+/** The member profile spells these many ways; reduce both sides to one form. */
+export function upgradeKey(raw){
+  return String(raw || "")
+    .replace(/^upgrade[_\s-]*/i, "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+/** "keepItSpacious" / "Upgrade_bloodmoon_preparation" -> "Keep it spacious" */
+export function upgradeTitle(raw){
+  const words = String(raw || "")
+    .replace(/^upgrade[_\s-]*/i, "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim().toLowerCase();
+  return words ? words[0].toUpperCase() + words.slice(1) : "";
+}
+
+function pick(map, names){
+  for (const n of names) if (map.has(n)) return map.get(n);
+  return undefined;
+}
+
+async function extractUpgrades(game){
+  console.log("\nExtracting upgrade definitions…");
+  if (!game || game.__rawText){
+    console.log("  !! game data did not parse; cannot read upgrades this run.");
+    return null;
+  }
+
+  // Find it by name, then fall back to any node that looks like a catalogue.
+  let node = null, where = null;
+  for (const [k, v] of Object.entries(game)){
+    if (/upgrade/i.test(k) && v && typeof v === "object"){ node = v; where = k; break; }
+  }
+  if (!node){ console.log("  !! no top-level key matching /upgrade/i."); return null; }
+
+  // It may be an array of definitions, or a map of key -> definition.
+  const entries = Array.isArray(node)
+    ? node.map((v, i) => [null, v, i])
+    : Object.entries(node).map(([k, v]) => [k, v, null]);
+  console.log(`  ${where}: ${Array.isArray(node) ? "array" : "object"}, ${entries.length} entries`);
+
+  const firstObj = entries.find(([, v]) => v && typeof v === "object" && !Array.isArray(v));
+  if (firstObj) console.log("  fields on a sample entry:", Object.keys(firstObj[1]).join(", "));
+  else console.log("  sample entry:", JSON.stringify(entries[0] && entries[0][1]).slice(0, 200));
+
+  const out = {};
+  let withMax = 0, noMax = 0;
+  const unresolved = [];
+
+  for (const [key, val] of entries){
+    let name = key, max = null;
+
+    if (val && typeof val === "object" && !Array.isArray(val)){
+      const m = new Map(Object.entries(val).map(([k, v]) => [k.toLowerCase(), v]));
+      name = pick(m, NAME_FIELDS) ?? key ?? name;
+      const rawMax = pick(m, MAX_FIELDS);
+      if (Number.isFinite(Number(rawMax))) max = Number(rawMax);
+      if (max == null){
+        for (const arr of LEVEL_ARRAYS){
+          const v = m.get(arr);
+          if (Array.isArray(v) && v.length){ max = v.length; break; }
+        }
+      }
+    } else if (Number.isFinite(Number(val))){
+      max = Number(val);                       // key -> max level, plainly
+    } else if (Array.isArray(val)){
+      max = val.length;
+    }
+
+    const id = upgradeKey(name || key);
+    if (!id) continue;
+    out[id] = { name: upgradeTitle(name || key) };
+    if (max != null && max > 0){ out[id].max = max; withMax++; }
+    else { noMax++; if (unresolved.length < 12) unresolved.push(String(name || key)); }
+  }
+
+  console.log(`  ${withMax} with a max level, ${noMax} without`);
+  if (unresolved.length) console.log("  no max found for:", unresolved.join(", "));
+
+  await mkdir(dirname(OUT_UPGRADES), { recursive: true });
+  await writeFile(OUT_UPGRADES, JSON.stringify({
+    generatedAt: new Date().toISOString(),
+    source: where,
+    count: Object.keys(out).length,
+    upgrades: out
+  }) + "\n");
+  console.log(`  wrote data/upgrades.json — ${Object.keys(out).length} upgrades`);
+  return withMax;
+}
+
 async function main(){
-  const stats = process.env.SKIP_STATS ? null : await extractStats();
-  const icons = process.env.SKIP_ICONS ? null : await fetchIcons();
+  const needGame = !process.env.SKIP_STATS || !process.env.SKIP_UPGRADES;
+  let game = null;
+  if (needGame){
+    console.log("Fetching game data (this is the big one)…");
+    game = await get("/api/Configuration/game-data");
+    describe(game, "game-data");
+  }
+
+  const stats = process.env.SKIP_STATS    ? null : await extractStats(game);
+  const ups   = process.env.SKIP_UPGRADES ? null : await extractUpgrades(game);
+  const icons = process.env.SKIP_ICONS    ? null : await fetchIcons();
+
   console.log("\nDone.");
   if (stats != null) console.log(`  ${stats} items have combat bonuses`);
+  if (ups   != null) console.log(`  ${ups} upgrades with a known maximum`);
   if (icons != null) console.log(`  ${icons} icons available`);
-  console.log("  Commit data/item-stats.json and data/icons/ and the dashboard picks them up.");
+  console.log("  Commit data/ and the dashboard picks it all up.");
 }
 
 main().catch(err => { console.error("Asset build failed:", err.message); process.exit(1); });
