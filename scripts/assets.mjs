@@ -488,13 +488,20 @@ async function fetchIcons(){
 /* Upgrades                                                            */
 /* ------------------------------------------------------------------ */
 
-const NAME_FIELDS = ["name", "displayname", "title", "upgradetype",
+/* Field names confirmed against the live payload, not guessed:
+     Type              — the identifier, and what the player profile keys match
+     Tiers             — the ceiling (Keep It Spacious is 190 of them)
+     TierNameLocKeys   — per-tier names; [0] is a fallback identifier
+     Discontinued      — removed from the game; never list it as "missing"
+     IsClanUpgrade     — bought by the clan, not the player                     */
+const NAME_FIELDS = ["type", "name", "displayname", "title", "upgradetype",
                      "namelocalizationkey", "namelockey", "localizationkey"];
-const MAX_FIELDS  = ["maxlevel", "maxtier", "maxupgradelevel", "maxlevels",
+const MAX_FIELDS  = ["tiers", "maxlevel", "maxtier", "maxupgradelevel", "maxlevels",
                      "levels", "maxrank", "maxamount", "maxcount"];
 /* Arrays whose length IS the number of levels, when no explicit max exists. */
-const LEVEL_ARRAYS = ["levels", "tiers", "costs", "upgradelevels", "levelcosts",
-                      "requirements", "prices"];
+const LEVEL_ARRAYS = ["tiers", "costs", "tiernamelockeys", "tierdescriptionlockeys",
+                      "tierunlocks", "itemcosts", "levels", "upgradelevels",
+                      "levelcosts", "requirements", "prices"];
 /* The game groups upgrades (Skilling / Combat / Pets) and shows a description
    for each; carry both through when the data has them. */
 const CAT_FIELDS  = ["category", "upgradecategory", "group", "type", "section"];
@@ -584,22 +591,47 @@ async function extractUpgrades(game){
   let withMax = 0, noMax = 0;
   const unresolved = [];
 
+  /* Loc keys arrive per tier: "keep_it_spacious_tier_1" names one tier, not the
+     upgrade. Strip the tier suffix so the whole thing reads as one upgrade. */
+  const stripTier = t => String(t).replace(/[_\s-]*tier[_\s-]*\d+$/i, "").replace(/[_\s-]\d+$/, "");
+
+  const longest = (...arrays) => arrays.reduce(
+    (n, a) => Array.isArray(a) && a.length > n ? a.length : n, 0);
+
   for (const [key, val] of entries){
-    let name = key, max = null;
+    let name = key, max = null, disc = false, clan = false, desc = null;
 
     if (val && typeof val === "object" && !Array.isArray(val)){
       const m = new Map(Object.entries(val).map(([k, v]) => [k.toLowerCase(), v]));
-      name = pick(m, NAME_FIELDS) ?? key ?? name;
-      const rawMax = pick(m, MAX_FIELDS);
-      if (Number.isFinite(Number(rawMax))) max = Number(rawMax);
-      if (max == null){
-        for (const arr of LEVEL_ARRAYS){
-          const v = m.get(arr);
-          if (Array.isArray(v) && v.length){ max = v.length; break; }
-        }
+
+      // Identity: Type is the join key the player profile uses.
+      const type = m.get("type");
+      const locs = m.get("tiernamelockeys");
+      if (typeof type === "string" && type.trim()) name = type;
+      else if (Array.isArray(locs) && typeof locs[0] === "string") name = stripTier(locs[0]);
+      else if (Number.isFinite(Number(type)) && Array.isArray(locs) && typeof locs[0] === "string")
+        name = stripTier(locs[0]);
+      else if (key) name = key;
+
+      // Ceiling: an explicit count, else however many tiers are described.
+      const tiers = m.get("tiers");
+      if (!Array.isArray(tiers) && Number.isFinite(Number(tiers)) && Number(tiers) > 0){
+        max = Number(tiers);
+      } else {
+        const n = longest(tiers, m.get("costs"), m.get("tiernamelockeys"),
+                          m.get("tierunlocks"), m.get("tierdescriptionlockeys"), m.get("itemcosts"));
+        if (n > 0) max = n;
       }
+
+      disc = m.get("discontinued") === true;
+      clan = m.get("isclanupgrade") === true;
+
+      const dl = m.get("tierdescriptionlockeys");
+      if (Array.isArray(dl) && typeof dl[0] === "string" && /\s/.test(dl[0])) desc = dl[0];
+      const cat = pick(m, CAT_FIELDS);
+      if (typeof cat === "string" && cat) desc = desc || null;
     } else if (Number.isFinite(Number(val))){
-      max = Number(val);                       // key -> max level, plainly
+      max = Number(val);
     } else if (Array.isArray(val)){
       max = val.length;
     }
@@ -607,15 +639,11 @@ async function extractUpgrades(game){
     const id = upgradeKey(name || key);
     if (!id) continue;
     out[id] = { name: upgradeTitle(name || key) };
-    if (val && typeof val === "object" && !Array.isArray(val)){
-      const m = new Map(Object.entries(val).map(([k, v]) => [k.toLowerCase(), v]));
-      const cat  = pick(m, CAT_FIELDS);
-      const desc = pick(m, DESC_FIELDS);
-      if (typeof cat  === "string" && cat)  out[id].cat  = upgradeTitle(cat);
-      if (typeof desc === "string" && desc) out[id].desc = desc;
-    }
     if (max != null && max > 0){ out[id].max = max; withMax++; }
     else { noMax++; if (unresolved.length < 12) unresolved.push(String(name || key)); }
+    if (disc) out[id].disc = true;
+    if (clan) out[id].clan = true;
+    if (desc) out[id].desc = desc;
   }
 
   console.log(`  ${withMax} with a max level, ${noMax} without`);
@@ -623,11 +651,17 @@ async function extractUpgrades(game){
   const sample = Object.entries(out).slice(0, 6)
     .map(([k, v]) => `${k}${v.max ? "/" + v.max : " (no max)"}`).join(", ");
   console.log("  sample of what was written:", sample);
-  const cats = [...new Set(Object.values(out).map(v => v.cat).filter(Boolean))];
-  console.log(cats.length ? `  categories found: ${cats.join(", ")}`
-                          : "  no category field found — the list will render ungrouped");
-  const withDesc = Object.values(out).filter(v => v.desc).length;
-  console.log(`  ${withDesc} have a description`);
+  const vals = Object.values(out);
+  console.log(`  ${vals.filter(v => v.disc).length} discontinued, ${
+    vals.filter(v => v.clan).length} are clan upgrades`);
+  const first = entries.find(([, v]) => isObj(v));
+  if (first){
+    const v = first[1];
+    console.log("  sample entry values: Type=" + JSON.stringify(v.Type) +
+      " Tiers=" + JSON.stringify(Array.isArray(v.Tiers) ? `[${v.Tiers.length}]` : v.Tiers) +
+      " Costs=" + (Array.isArray(v.Costs) ? `[${v.Costs.length}]` : JSON.stringify(v.Costs)) +
+      " TierNameLocKeys[0]=" + JSON.stringify(Array.isArray(v.TierNameLocKeys) ? v.TierNameLocKeys[0] : undefined));
+  }
 
   await mkdir(dirname(OUT_UPGRADES), { recursive: true });
   await writeFile(OUT_UPGRADES, JSON.stringify({
