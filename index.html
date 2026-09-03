@@ -1625,13 +1625,21 @@ async function renderUpgrades(prof){
   }
 
   const done = [], part = [], miss = [];
+  let skippedDisc = 0, skippedClan = 0;
   for (const [id, def] of Object.entries(cat)){
     const have = held.get(id);
     const lvl  = have ? have.level : 0;
     const max  = def.max ?? null;
     const row  = { name: def.name || upgradeTitle(id), lvl, max,
                    cat: def.cat || null, desc: def.desc || null };
-    if (lvl <= 0) miss.push(row);
+    if (lvl <= 0){
+      // Don't tell someone to go buy an upgrade that no longer exists, or one
+      // the clan buys rather than the player. Owned ones still show, since the
+      // account plainly has them.
+      if (def.disc) skippedDisc++;
+      else if (def.clan) skippedClan++;
+      else miss.push(row);
+    }
     else if (max != null && lvl >= max) done.push(row);
     else part.push(row);
     held.delete(id);
@@ -1672,7 +1680,12 @@ async function renderUpgrades(prof){
     `<div class="uptop">
        <div class="hint" style="margin:0">${num(ownedCount)} of ${
          num(Object.keys(cat).length)} upgrades owned \u00b7 ${num(done.length)} fully levelled \u00b7 ${
-         num(miss.length)} not taken yet</div>
+         num(miss.length)} not taken yet${
+         skippedDisc || skippedClan
+           ? ` <span class="dim">(excluding ${[
+               skippedDisc ? `${num(skippedDisc)} discontinued` : "",
+               skippedClan ? `${num(skippedClan)} clan-bought` : ""
+             ].filter(Boolean).join(" and ")})</span>` : ""}</div>
        <label class="toggle"><input type="checkbox" id="upHideDone"> Only what\u2019s unfinished</label>
      </div>` +
     section("Still levelling", part, "closest to finished first") +
