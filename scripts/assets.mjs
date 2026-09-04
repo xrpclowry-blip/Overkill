@@ -787,28 +787,18 @@ function isCombatTask(t){
      Items    -> { Items: [ … ] }
      Upgrades -> { Id, Items: [ … ] }
      Tasks.X  -> [ { _id, Items: [ … ] } ]      <- an ARRAY holding the wrapper
-   Rather than special-case a fourth variant next time, find the largest array
-   whose members actually look like what we're after, wherever it is buried. */
-function deepestList(node, looksRight, depth = 0){
-  if (!node || typeof node !== "object" || depth > 6) return null;
-  let best = null;
-  const consider = arr => {
-    const n = arr.filter(looksRight).length;
-    if (n && (!best || n > best.n)) best = { list: arr, n };
-  };
+   And a skill's tasks are split across TABS, each its own list: Smithing holds
+   Smelting, Bronze, Iron … Diamond separately, so taking only the biggest kept
+   twelve bars and threw away every piece of jewellery. Collect them ALL. */
+function collectLists(node, looksRight, depth = 0, found = []){
+  if (!node || typeof node !== "object" || depth > 6) return found;
   if (Array.isArray(node)){
-    consider(node);
-    for (const v of node.slice(0, 50)){
-      const inner = deepestList(v, looksRight, depth + 1);
-      if (inner && (!best || inner.n > best.n)) best = inner;
-    }
-    return best;
+    if (node.some(looksRight)) found.push(node);
+    for (const v of node.slice(0, 80)) collectLists(v, looksRight, depth + 1, found);
+    return found;
   }
-  for (const v of Object.values(node)){
-    const inner = deepestList(v, looksRight, depth + 1);
-    if (inner && (!best || inner.n > best.n)) best = inner;
-  }
-  return best;
+  for (const v of Object.values(node)) collectLists(v, looksRight, depth + 1, found);
+  return found;
 }
 
 const looksLikeTask = v => v && typeof v === "object" && !Array.isArray(v) &&
@@ -844,12 +834,26 @@ async function extractTasks(game){
   console.log(`  Tasks has ${skills.length} sections: ${skills.join(", ")}`);
 
   const out = {};
+  const skipped = {};                 // one example per skill, for diagnosis
   let kept = 0, combat = 0, noOutput = 0;
 
   for (const [skill, listRaw] of Object.entries(tasksNode)){
-    const found = deepestList(listRaw, looksLikeTask);
-    const list = found && found.list;
-    if (!list){ console.log(`  ${skill}: no task-shaped list found, skipped`); continue; }
+    const lists = collectLists(listRaw, looksLikeTask);
+    if (!lists.length){ console.log(`  ${skill}: no task-shaped list found, skipped`); continue; }
+
+    /* One skill can hold many lists (one per tab). Merge them, and de-duplicate
+       in case a list is reachable by more than one path through the wrappers. */
+    const seenTask = new Set();
+    const list = [];
+    for (const arr of lists){
+      for (const t of arr){
+        if (!looksLikeTask(t)) continue;
+        const key = `${t.TaskId ?? t.taskId ?? "?"}|${t.Name ?? t.name ?? "?"}`;
+        if (seenTask.has(key)) continue;
+        seenTask.add(key);
+        list.push(t);
+      }
+    }
 
     const rows = [];
     for (const t of list){
@@ -861,7 +865,15 @@ async function extractTasks(game){
       const outId  = Number(m.get("itemreward"));
       const outAmt = Number(m.get("itemamount"));
       const base   = Number(m.get("basetime"));
-      if (!Number.isFinite(outId) || outId <= 0){ noOutput++; continue; }
+      if (!Number.isFinite(outId) || outId <= 0){
+        noOutput++;
+        /* Six whole skills vanished through this branch — Farming, Carpentry,
+           Foraging, Brewing, Enchanting, Plundering — yet a Farming task
+           plainly yields five potatoes. They must record their output under a
+           field this doesn't know about, so show one rather than guess. */
+        if (!skipped[skill]) skipped[skill] = t;
+        continue;
+      }
 
       rows.push({
         name:  String(m.get("name") ?? ""),
@@ -879,12 +891,23 @@ async function extractTasks(game){
       out[skill] = rows;
       const withCost = rows.filter(r => r.costs.length).length;
       const instant  = rows.filter(r => !r.ms).length;
-      console.log(`  ${skill}: ${rows.length} tasks · ${withCost} consume materials` +
-                  (instant ? ` · ${instant} take no time` : ""));
+      console.log(`  ${skill}: ${rows.length} tasks from ${lists.length} list(s) · ` +
+                  `${withCost} consume materials` +
+                  (instant ? ` · ${instant} instant (no processing time)` : ""));
     }
   }
 
   console.log(`  kept ${kept}, skipped ${combat} combat and ${noOutput} with no item output`);
+
+  /* Print a real example from each skill that produced nothing, trimmed of the
+     dozens of zeroed combat fields every task carries. */
+  const interesting = ([k, v]) =>
+    !/^(enemy|secondaryattack|invocationdata|previousattack|usedattack|attackstyle|pvmstat|isboss|isclanboss|canbeteamed|amountoftargets|enableprotections|weapontype|customicon|identifiabletype|triggermilestone|builtstorage|descriptionlockey|additionallevel|magiclevelrequirement|scrolltype|basesuccess|canreceive|affectedby|custompet)/i.test(k)
+    && v !== 0 && v !== "" && v !== false && v !== null;
+  for (const [skill, t] of Object.entries(skipped)){
+    const shown = Object.fromEntries(Object.entries(t).filter(interesting));
+    console.log(`  SKIPPED ${skill}: ${JSON.stringify(shown).slice(0, 400)}`);
+  }
   const sample = Object.values(out)[0] && Object.values(out)[0][0];
   if (sample) console.log("  sample:", JSON.stringify(sample));
 
