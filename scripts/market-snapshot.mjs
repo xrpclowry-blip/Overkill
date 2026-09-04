@@ -117,14 +117,32 @@ async function main(){
     }
     if (s && Number.isFinite(Number(s.tradeVolume))) row.vol30 = Number(s.tradeVolume);
     if (dailyVols.length){
-      const last7 = dailyVols.slice(-7).filter(n => Number.isFinite(n));
+      /* The final bucket is the day in progress, not a finished one: two items
+         trading 116k and 465k a day both ended at ~180 on the first live run,
+         which is four hours of trading, not a day of it. Averaging it in drags
+         every item's rate down, so complete days only. */
+      const complete = dailyVols.slice(0, -1).filter(n => Number.isFinite(n));
+      const last7 = complete.slice(-7);
       if (last7.length) row.volPerDay = Math.round(last7.reduce((a, b) => a + b, 0) / last7.length);
-      row.volYesterday = Math.round(dailyVols[dailyVols.length - 1] || 0);
+      if (complete.length) row.volPrevDay = Math.round(complete[complete.length - 1]);
+      row.volToday = Math.round(dailyVols[dailyVols.length - 1] || 0);   // partial
     }
     if (s && s.lastTradeTimestamp) row.lastTrade = s.lastTradeTimestamp;
     rows[id] = row;
   }
   console.log(`  ${priced} items priced, ${twoSided} with both a bid and an ask`);
+
+  /* Print the tail of two busy items so the shape of the volume series is a
+     matter of record rather than inference. The final bucket looks like a
+     partial day; this is how we confirm it instead of assuming it. */
+  for (const id of [0, 1]){
+    const s0 = byId.get(id);
+    if (!s0 || !Array.isArray(s0.volumes)) continue;
+    const v = s0.volumes.map(Number);
+    console.log(`  item ${id}: ${v.length} volume buckets, last 5 = ${
+      v.slice(-5).map(n => Math.round(n)).join(", ")}` +
+      (Array.isArray(s0.prices) ? ` · ${s0.prices.length} price buckets` : ""));
+  }
 
   await mkdir(DIR, { recursive: true });
 
