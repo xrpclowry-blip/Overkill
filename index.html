@@ -276,6 +276,12 @@ input[type="search"]{min-width:180px}
 .capbar{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text-muted)}
 .capbar input{background:var(--surface-2);color:var(--text-primary);border:1px solid var(--border);
   border-radius:8px;padding:6px 10px;font-size:13px;font-family:var(--mono);width:92px}
+.pctwrap{position:relative;display:inline-flex;align-items:center}
+#skillPotWrap input[type=checkbox]{width:auto;margin:0}
+.pctwrap input{width:74px;padding-right:24px;text-align:right}
+.pctwrap .pct{position:absolute;right:10px;pointer-events:none;font-size:12px;
+  font-family:var(--mono);color:var(--text-muted)}
+.capbar .mult{font-family:var(--mono);font-size:12px;color:var(--accent)}
 .seg{display:inline-flex;gap:2px;background:var(--surface-2);border:1px solid var(--border);
   border-radius:8px;padding:2px}
 .seg button{background:none;border:none;color:var(--text-muted);font-family:inherit;
@@ -665,6 +671,25 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
       <div id="picksMore"></div>
     </div>
 
+    <div class="panel" style="margin-top:14px" id="craftPanel" hidden>
+      <h2>Item creation — instant combinations</h2>
+      <p class="hint" id="craftHint"></p>
+      <div class="controls">
+        <select id="craftWho"><option value="">Anyone's levels</option></select>
+        <select id="craftExit">
+          <option value="instant">Sell instantly into the bid</option>
+          <option value="patient">List it and wait</option>
+        </select>
+        <label class="dim" style="font-size:12.5px">
+          <input type="checkbox" id="craftAffordable"> Only what I can afford</label>
+        <span class="dim" id="craftCount" style="font-size:12.5px"></span>
+      </div>
+      <p class="hint banner warn" id="craftMissing" hidden
+         style="display:block;margin:0 0 12px;font-size:12.5px"></p>
+      <div class="tbl-scroll"><table id="craftTable"></table></div>
+    </div>
+
+    <div class="panel" style="margin-top:14px" id="craftDetail" hidden></div>
     <details class="fulllist">
       <summary>Show the full item list — every candidate, with filters and the reasons for skipping</summary>
 
@@ -721,26 +746,6 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
 
       <div class="panel" id="mktDetail" style="margin-top:14px" hidden></div>
 
-      <div class="panel" style="margin-top:14px" id="craftPanel" hidden>
-        <h2>Item creation — instant combinations</h2>
-        <p class="hint" id="craftHint"></p>
-        <div class="controls">
-          <select id="craftWho"><option value="">Anyone's levels</option></select>
-          <select id="craftExit">
-            <option value="instant">Sell instantly into the bid</option>
-            <option value="patient">List it and wait</option>
-          </select>
-          <label class="dim" style="font-size:12.5px">
-            <input type="checkbox" id="craftAffordable"> Only what I can afford</label>
-          <span class="dim" id="craftCount" style="font-size:12.5px"></span>
-        </div>
-        <p class="hint banner warn" id="craftMissing" hidden
-           style="display:block;margin:0 0 12px;font-size:12.5px"></p>
-        <div class="tbl-scroll"><table id="craftTable"></table></div>
-      </div>
-
-      <div class="panel" style="margin-top:14px" id="craftDetail" hidden></div>
-
       <div class="panel" style="margin-top:14px">
         <h2>Why these are excluded</h2>
         <p class="hint">The tempting-looking ones that would cost you money, and the reason.
@@ -759,14 +764,15 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
       <h2>Skilling</h2>
       <p class="hint" id="skillHint">Loading…</p>
       <div class="controls">
-        <label class="capbar">Your speed
-          <select id="skillSpeed">
-            <option value="5">5.00× — 80%, capped (gathering with Gatherers)</option>
-            <option value="4" selected>4.00× — 75%, geared</option>
-            <option value="2.86">2.86× — 65%, no potion up</option>
-            <option value="2">2.00× — 50%, no outfit (smithing)</option>
-            <option value="1">1.00× — base, no gear</option>
-          </select>
+        <label class="capbar"><span id="skillSpeedLbl">Skilling speed</span>
+          <span class="pctwrap"><input id="skillPct" type="number" min="0" max="80" step="1"
+            value="75" inputmode="numeric"
+            title="Your skilling boost percentage, the number the game shows on your boosts screen. Tool + cape + jewellery + potion. Caps at 80%. Set it per skill — open a skill first and the box remembers that skill's number."><span class="pct">%</span></span>
+          <span class="mult" id="skillMult">4.00× faster</span>
+        </label>
+        <label class="capbar" id="skillPotWrap" hidden>
+          <input type="checkbox" id="skillPot" checked>
+          <span>Use <span id="skillPotLbl">potion</span></span>
         </label>
       </div>
       <div id="skillBody"></div>
@@ -797,6 +803,7 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
   <!-- VAULT -->
   <section class="view" id="view-vault" hidden>
     <div class="tiles" id="vaultTiles"></div>
+    <p class="hint" id="vaultCoverage" hidden></p>
     <div class="panel">
       <h2>Vault flow</h2>
       <p class="hint">Value added and withdrawn per day, priced at the current player-market rate.</p>
@@ -1037,7 +1044,7 @@ const state = {
   playerRanks: new Map(),   // name -> leaderboard profile, or LB_MISS
   clan:null, members:[], byName:new Map(),
   xp:{ 24:null, 168:null },
-  timeline:[], logs:[],
+  timeline:[], logs:[], logArchive:null,
   items:new Map(),          // lowercase name -> {id,name,baseValue,tradeable}
   prices:new Map(),         // itemId -> price
   vault:null,
@@ -1400,15 +1407,44 @@ async function loadAll(){
   if (typeof loadMarket === "function") setTimeout(() => loadMarket(), 1200);
 }
 
+/* The API's clan log is a rolling window — measured at 616 entries reaching
+   back sixteen days, with skip=800 a 404. Every vault figure on this page is
+   derived from it, so as days pass, deposits stop existing and members' vault
+   totals shrink toward zero on their own.
+
+   The archive job commits what it sees before it ages out. Read both: the file
+   for depth, the API for the last few hours the file has not caught yet. A log
+   entry never changes after it is written, so the only merge rule needed is
+   "same timestamp, member and message means the same entry". */
+const logKey = e => `${e.timestamp}|${e.memberUsername || ""}|${e.message || ""}`;
+
 async function loadLogs(){
-  const out = [];
-  for (let p = 0; p < LOG_PAGES; p++){
-    const page = await api(`/api/Clan/logs/clan/${encodeURIComponent(CLAN)}?skip=${p*LOG_PAGE}&limit=${LOG_PAGE}`, { optional:true });
-    if (!Array.isArray(page) || !page.length) break;
-    out.push(...page);
-    if (page.length < LOG_PAGE) break;
-  }
-  return out;
+  const [live, archived] = await Promise.all([
+    (async () => {
+      const out = [];
+      for (let p = 0; p < LOG_PAGES; p++){
+        const page = await api(`/api/Clan/logs/clan/${encodeURIComponent(CLAN)}?skip=${p*LOG_PAGE}&limit=${LOG_PAGE}`, { optional:true });
+        if (!Array.isArray(page) || !page.length) break;
+        out.push(...page);
+        if (page.length < LOG_PAGE) break;
+      }
+      return out;
+    })(),
+    fetch("./data/clan-log.json", { cache:"no-store" })
+      .then(r => r.ok ? r.json() : null).catch(() => null)
+  ]);
+
+  const seen = new Map();
+  for (const e of (archived && Array.isArray(archived.entries)) ? archived.entries : [])
+    seen.set(logKey(e), e);
+  for (const e of live) seen.set(logKey(e), e);
+
+  state.logArchive = archived
+    ? { count: archived.count || 0, oldest: archived.oldest, updatedAt: archived.updatedAt }
+    : null;
+
+  return [...seen.values()]
+    .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
 }
 
 /* =====================================================================
@@ -2091,6 +2127,24 @@ function renderVault(){
     return;
   }
   const spanTxt = v.span ? `${dateShort(v.span.from)} → ${dateShort(v.span.to)}` : "";
+
+  /* Say plainly how far back the numbers reach, because the answer changes
+     over time and a shrinking total looks like a bug otherwise. */
+  const a = state.logArchive;
+  const note = $("#vaultCoverage");
+  if (note){
+    note.hidden = false;
+    note.innerHTML = a
+      ? `Reading ${num(a.count)} archived log entries back to <strong>${dateShort(a.oldest)}</strong>,
+         plus everything the game still holds. The game itself only keeps about sixteen
+         days, so anything older than that survives here and nowhere else.`
+      : `<strong>No archive yet.</strong> The game's clan log only keeps about sixteen days,
+         so every figure here covers that window and no further — deposits drop out as they age.
+         Run the <em>Clan log archive</em> workflow once and it starts keeping them.`;
+    note.className = a ? "hint" : "hint banner warn";
+    if (!a) note.style.cssText = "display:block;margin:0 0 12px;font-size:12.5px";
+    else note.style.cssText = "";
+  }
   $("#vaultTiles").innerHTML = [
     tile("Value added", gold(v.addedValue), spanTxt),
     tile("Value withdrawn", gold(v.takenValue), `${v.rows} vault actions logged`),
@@ -4058,6 +4112,12 @@ function initPicks(){
    3. A dropdown over an eight-column table is a spreadsheet. Skills are
       badges you open; tasks are cards, laid out the way the game lays
       them out.
+
+   Speed is entered the way the game states it — a boost PERCENTAGE, not
+   a multiplier nobody can look up. Time is BaseTime x (1 - pct), so 75%
+   is 4.00x and the 80% cap is 5.00x. The percentage is remembered per
+   skill, because gear differs per skill: Smithing has no outfit, so it
+   sits well below the others.
    ===================================================================== */
 
 const TASKS_URL  = "./data/tasks.json";
@@ -4066,7 +4126,15 @@ const SKILL_TAX  = 0.01;
 
 let taskDoc = null, skillPrices = null;
 let skillOpen = "";          // "" = the badge grid
-let skillSpeed = 4.0;
+
+/* The game caps skilling boost at 80%. Everything is stored as the percentage
+   the member reads off their own boosts screen; the multiplier is derived. */
+const PCT_CAP = 80;
+let skillPct = { _default: 75 };   // per-skill overrides live alongside _default
+
+const pctFor   = s => Math.max(0, Math.min(PCT_CAP,
+  (s && skillPct[s] != null) ? skillPct[s] : skillPct._default));
+const speedFor = s => 1 / (1 - pctFor(s) / 100);
 
 /** "coal_ore" -> "Coal ore" */
 const taskName = raw => {
@@ -4085,6 +4153,40 @@ const MODS = {
   Carpentry:   { key:"plankBargain",    max:3, cost: -1.0, why:"Plank bargain removes the material cost" },
   Smithing:    { key:"smeltingMagic",   max:3, oreOnly: -0.3, why:"Smelting magic saves 30% of the ore" }
 };
+
+/* Consumables. Unlike an upgrade these are BOUGHT — priced from the same
+   snapshot as everything else — and burned by the clock, not by the action, so
+   a 3-minute potion costs (action seconds / 180) each time you swing.
+
+   Only the potion whose in-game text has actually been read is modelled. The
+   others exist; guessing their numbers would be worse than leaving them out. */
+const POTIONS = {
+  Smithing: {
+    match: /^potion of forgery$/i,
+    secs: 180, rate: 0.10, label: "Potion of forgery",
+    saves: nm => /\bbars?\b/i.test(nm) && !/astronomical|otherworldly/i.test(nm),
+    why: "Potion of forgery saves 10% of the bars — it does nothing for smelting, " +
+         "and nothing for astronomical or otherworldly"
+  }
+};
+let potionOn = true;
+
+/** Resolve the potion's item id by name once, then price it like any input. */
+function potionFor(skill){
+  const p = POTIONS[skill]; if (!p) return null;
+  /* Item metadata arrives asynchronously, so a miss must be retried rather than
+     memoised — caching the first null silently disabled every potion. */
+  const size = state.itemById ? state.itemById.size : 0;
+  if (p._id == null && p._size !== size){
+    p._size = size;
+    if (state.itemById) for (const [id, it] of state.itemById){
+      if (p.match.test(String(it.name || "").replace(/_/g, " ").trim())){ p._id = id; break; }
+    }
+  }
+  if (p._id == null) return null;
+  const unit = buyPrice(p._id);
+  return unit ? Object.assign({}, p, { id: p._id, unit }) : null;
+}
 
 function modTier(m){
   const p = (state.members || []).find(x => x.profile && x.profile.upgrades);
@@ -4119,6 +4221,15 @@ function planTask(t, skill){
   const smeltable = m && m.oreOnly && /_bar$/.test(t.name) &&
                     !/^(astronomical|otherworldly)_/.test(t.name);
 
+  const instant = !t.ms;
+  const seconds = instant ? 0 : (t.ms / 1000) / speedFor(skill);
+
+  /* A potion only earns its keep on a task that actually consumes what it
+     saves, and only when the clock is running. Charging one for smelting
+     would quietly turn a profit into a loss. */
+  const pot = (potionOn && !instant) ? potionFor(skill) : null;
+  const potUsed = pot && (t.costs || []).some(([id]) => pot.saves(itemNameFor(id)));
+
   const parts = [];
   let cost = 0;
   for (const [id, qty] of (t.costs || [])){
@@ -4127,16 +4238,18 @@ function planTask(t, skill){
     let q = qty;
     if (m && m.cost)                q *= (1 + m.cost * frac);
     if (smeltable && id !== COAL_ID) q *= (1 + m.oreOnly * frac);
+    if (potUsed && pot.saves(itemNameFor(id))) q *= (1 - pot.rate);
     cost += unit * q;
     parts.push({ id, qty, used:q, unit, vol: dailyVolume(id) });
   }
+
+  const potCost = potUsed ? (seconds / pot.secs) * pot.unit : 0;
+  cost += potCost;
 
   const yieldMul  = m && m.out ? 1 + m.out * frac : 1;
   const made      = t.n * yieldMul;
   const revenue   = made * outUnit * (1 - SKILL_TAX);
   const perAction = revenue - cost;
-  const instant   = !t.ms;
-  const seconds   = instant ? 0 : (t.ms / 1000) / skillSpeed;
 
   /* How many actions a day the CLOCK allows… */
   const byClock = instant ? Infinity : Math.floor(86400 / seconds);
@@ -4156,7 +4269,8 @@ function planTask(t, skill){
 
   return {
     ...t, skill, parts, cost, revenue, made, outUnit, perAction, seconds, instant,
-    byClock, byMarket, actions, perDay,
+    byClock, byMarket, actions, perDay, potUsed, potCost, potLabel: potUsed ? pot.label : null,
+    potWhy: potUsed ? pot.why : null,
     limited: byMarket < byClock ? "market" : "time",
     scarce,
     xpDay: (actions === Infinity || !t.xp) ? null : actions * t.xp,
@@ -4175,7 +4289,9 @@ function renderSkillGrid(){
   $("#skillHint").innerHTML =
     `Materials priced at what you'd <strong>pay</strong>, output at what you'd ` +
     `<strong>receive</strong>, after the 1% tax · rates capped by what the market ` +
-    `actually trades · prices from ${ago((Date.now() - new Date(skillPrices.capturedAt).getTime())/3600000)} ago`;
+    `actually trades · prices from ${ago((Date.now() - new Date(skillPrices.capturedAt).getTime())/3600000)} ago` +
+    `<br>Set <strong>skilling speed</strong> to the boost % your game shows. Open a skill first ` +
+    `and the box remembers that skill on its own — Smithing has no outfit, so it sits lower.`;
 
   host.innerHTML = `<div class="skgrid">${names.map(n => {
     const rows = skillRows(n).filter(r => r.perDay != null);
@@ -4189,7 +4305,6 @@ function renderSkillGrid(){
     </button>`;
   }).join("")}</div>`;
 
-  $$(".skbadge").forEach(b => b.onclick = () => { skillOpen = b.dataset.skill; renderSkills(); });
 }
 
 /* ---------------- one skill ---------------- */
@@ -4202,7 +4317,7 @@ function renderSkillCards(){
   $("#skillHint").innerHTML =
     `<a href="#" id="skBack">&larr; all skills</a> · ${num(rows.length)} of ${num(total)} priced` +
     (mod ? ` · ${esc(mod.modWhy)}` : "") +
-    ` · ${skillSpeed.toFixed(2)}× speed`;
+    (rows.some(r => r.potUsed) ? ` · ${esc(rows.find(r => r.potUsed).potWhy)}` : "");
 
   rows.sort((a, b) => (b.perDay ?? b.perAction) - (a.perDay ?? a.perAction));
 
@@ -4223,7 +4338,8 @@ function renderSkillCards(){
         : '<span class="mat dim">no materials</span>'}</div>
 
       <div class="lines">
-        <div><span>Materials</span><b>${r.cost ? gold(r.cost) : "—"}</b></div>
+        <div><span>Materials</span><b>${r.cost ? gold(r.cost - r.potCost) : "—"}</b></div>
+        ${r.potUsed ? `<div><span>${esc(r.potLabel)}</span><b>${gold(r.potCost)}</b></div>` : ""}
         <div><span>Sells for</span><b>${gold(r.revenue)}</b></div>
         <div class="big"><span>Profit each</span>
           <b class="${loss ? "neg" : "pos"}">${loss ? "−" : ""}${gold(Math.abs(r.perAction))}</b></div>
@@ -4233,40 +4349,85 @@ function renderSkillCards(){
 
       <div class="cap">${loss
         ? `Costs more to make than it sells for.`
-        : r.instant
-          ? `Instant — profit is per craft.`
-          : r.limited === "market"
-            ? `Capped at ${num(r.actions)} a day by the market: only ${num(r.scarce.vol)}
-               ${esc(r.scarce.what)} trade in a day.`
-            : `${num(r.actions)} a day at this speed — the market can absorb it.`}</div>
+        : r.limited === "market"
+          ? `${r.instant ? "Instant, so the market is the only limit" : `Capped at ${num(r.actions)} a day by the market`}: only ${num(r.scarce.vol)}
+             ${esc(r.scarce.what)} trade in a day.`
+          : `${num(r.actions)} a day at this speed — the market can absorb it.`}</div>
     </div>`;
   }).join("")}</div>` :
     `<div class="empty" style="padding:12px 0">Nothing in ${esc(spaceCase(skillOpen))}
       can be priced from the market yet.</div>`;
 
-  const back = $("#skBack");
-  if (back) back.onclick = e => { e.preventDefault(); skillOpen = ""; renderSkills(); };
+}
+
+/* The label and the derived multiplier follow whatever you have open, so the
+   box always edits the thing you are looking at. Rewriting the input's value
+   mid-keystroke fights the typist, so that only happens on a skill switch. */
+function syncSpeedUI(writeValue){
+  const inp = $("#skillPct"); if (!inp) return;
+  const pct = pctFor(skillOpen);
+  if (writeValue && inp.value !== String(pct)) inp.value = String(pct);
+  const lbl = $("#skillSpeedLbl");
+  if (lbl) lbl.textContent = skillOpen ? `${spaceCase(skillOpen)} speed` : "Skilling speed";
+  const box = $("#skillPotWrap"), pot = POTIONS[skillOpen];
+  if (box){
+    box.hidden = !pot;
+    if (pot) $("#skillPotLbl").textContent = pot.label;
+    const cb = $("#skillPot"); if (cb) cb.checked = potionOn;
+  }
+  const mul = $("#skillMult");
+  if (mul) mul.textContent = `${speedFor(skillOpen).toFixed(2)}× faster` +
+    (pct >= PCT_CAP ? " · capped" : "");
 }
 
 function renderSkills(){
   const host = $("#skillBody"), hint = $("#skillHint");
   if (!host) return;
+  const bar = $("#skillPct"); if (bar) bar.closest(".controls").hidden = !(taskDoc && skillPrices);
   if (!taskDoc){ hint.textContent = "No task data yet — the asset job writes data/tasks.json."; host.innerHTML = ""; return; }
   if (!skillPrices){ hint.textContent = "No price snapshot yet — the hourly job writes data/market/latest.json."; host.innerHTML = ""; return; }
   if (skillOpen && taskDoc.tasks[skillOpen]) renderSkillCards(); else renderSkillGrid();
 }
 
+/** Open a skill (or "" for the grid) and point the speed box at it. */
+function openSkill(name){ skillOpen = name; renderSkills(); syncSpeedUI(true); }
+
 function initSkills(){
   if (!$("#skillBody")) return;
-  const sp = $("#skillSpeed");
-  if (sp) sp.onchange = () => { skillSpeed = Number(sp.value) || 4; renderSkills(); };
+  const inp = $("#skillPct");
+  if (inp){
+    const apply = () => {
+      const raw = inp.value.trim();
+      if (raw === "") return;                       // mid-edit, leave state alone
+      let v = Math.round(Number(raw));
+      if (!Number.isFinite(v)) return;
+      v = Math.max(0, Math.min(PCT_CAP, v));
+      if (v === pctFor(skillOpen)) return;          // nothing moved, don't re-render
+      if (skillOpen) skillPct[skillOpen] = v; else skillPct._default = v;
+      renderSkills(); syncSpeedUI(false);
+    };
+    inp.oninput  = apply;
+    inp.onchange = () => { apply(); syncSpeedUI(true); };   // clamp on blur/enter
+  }
+  const cb = $("#skillPot");
+  if (cb) cb.onchange = () => { potionOn = cb.checked; renderSkills(); syncSpeedUI(true); };
+
+  /* Delegated, not per-render: blurring the % box re-renders, and a handler bound
+     to the old node would be destroyed between mousedown and click. */
+  $("#skillBody").addEventListener("click", e => {
+    const b = e.target.closest(".skbadge");
+    if (b) openSkill(b.dataset.skill);
+  });
+  $("#skillHint").addEventListener("click", e => {
+    if (e.target.closest("#skBack")){ e.preventDefault(); openSkill(""); }
+  });
   Promise.all([
     fetch(TASKS_URL,  { cache:"no-store" }).then(r => r.ok ? r.json() : null).catch(() => null),
     fetch(PRICES_URL, { cache:"no-store" }).then(r => r.ok ? r.json() : null).catch(() => null)
   ]).then(([tasks, prices]) => {
     taskDoc = (tasks && tasks.tasks) ? tasks : null;
     skillPrices = (prices && prices.items) ? prices : null;
-    renderSkills();
+    renderSkills(); syncSpeedUI(true);
   });
 }
 </script>
