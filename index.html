@@ -272,6 +272,38 @@ input[type="search"]{min-width:180px}
 .fev .t{color:var(--text-muted);font-size:11.5px;font-variant-numeric:tabular-nums}
 .fev .m{color:var(--text-secondary)}
 .fev .m strong{color:var(--text-primary)}
+/* ---------- market picks ---------- */
+.capbar{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text-muted)}
+.capbar input{background:var(--surface-2);color:var(--text-primary);border:1px solid var(--border);
+  border-radius:8px;padding:6px 10px;font-size:13px;font-family:var(--mono);width:92px}
+.seg{display:inline-flex;gap:2px;background:var(--surface-2);border:1px solid var(--border);
+  border-radius:8px;padding:2px}
+.seg button{background:none;border:none;color:var(--text-muted);font-family:inherit;
+  font-size:12px;padding:5px 10px;border-radius:6px;cursor:pointer}
+.seg button:hover{color:var(--text-primary)}
+.seg button[aria-pressed="true"]{background:var(--surface-3);color:var(--text-primary)}
+.pick{background:var(--surface-2);border:1px solid var(--border-soft);border-radius:10px;
+  padding:13px 15px;margin-bottom:9px}
+.pick.top{border-color:#199e7055;background:linear-gradient(180deg,#199e700e,transparent 60%)}
+.pick .do{font-size:15px;line-height:1.55}
+.pick .do b{color:var(--text-primary)}
+.pick .do .buy{color:#3fc294;font-variant-numeric:tabular-nums}
+.pick .do .sell{color:#79b3f2;font-variant-numeric:tabular-nums}
+.pick .gain{font-size:13px;margin-top:4px;color:var(--text-secondary)}
+.pick .gain b{color:#3fc294;font-variant-numeric:tabular-nums}
+.pick .why{font-size:12px;color:var(--text-muted);margin-top:6px}
+.pick .cap{font-size:12px;color:var(--text-muted);margin-top:2px}
+.pick .rank{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--text-muted);margin-bottom:5px;font-weight:600}
+.stale{color:#e0a52e}
+.alloc{margin-top:4px;padding-top:10px;border-top:1px solid var(--border-soft)}
+.atot{font-size:13px;color:var(--text-secondary)}
+.atot b{color:var(--text-primary)}
+.restwrap table.mini{font-size:12.5px}
+.restwrap table.mini td{padding:5px 8px;border-bottom:1px solid var(--border-soft)}
+.restwrap table.mini td:first-child{color:var(--text-primary)}
+.capbar select{background:var(--surface-2);color:var(--text-primary);border:1px solid var(--border);
+  border-radius:8px;padding:6px 8px;font-size:12.5px;font-family:inherit}
 .barrow .lbl .sicon{margin-right:6px}
 .fev .m .sicon{margin:0 5px 0 2px}
 td .sicon{margin-right:6px}
@@ -560,7 +592,36 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
 
   <!-- MARKET -->
   <section class="view" id="view-market" hidden>
-    <div id="mktLoading" class="panel" hidden>
+
+    <!-- The answer first. Everything below this is for people who want to argue
+         with it; most members should never need to scroll past this panel. -->
+    <div class="panel" id="picksPanel">
+      <h2>What to trade right now</h2>
+      <p class="hint" id="picksHint">Reading the last market snapshot…</p>
+      <div class="controls" id="picksControls" hidden>
+        <label class="capbar">Gold to spend
+          <input type="text" id="picksGold" value="10m" size="8" inputmode="text">
+        </label>
+        <div class="seg" id="picksPresets">
+          <button data-g="10000000">10M</button>
+          <button data-g="50000000">50M</button>
+          <button data-g="100000000">100M</button>
+          <button data-g="500000000">500M</button>
+        </div>
+        <label class="capbar">Offer slots
+          <select id="picksSlots">
+            <option value="6" selected>6 — one character, premium</option>
+            <option value="3">3 — one character, free</option>
+            <option value="18">18 — three characters, premium</option>
+            <option value="9">9 — three characters, free</option>
+          </select>
+        </label>
+      </div>
+      <div id="picksList"></div>
+      <div id="picksMore"></div>
+    </div>
+
+    <div id="mktLoading" class="panel" style="margin-top:14px" hidden>
       <h2>Reading the market</h2>
       <p class="hint" id="mktLoadingText">Fetching current prices and 30 days of trade history…</p>
       <div class="skel" style="height:14px;margin:6px 0"></div>
@@ -2020,6 +2081,9 @@ function renderLog(){
 function renderAll(){
   renderOverview(); renderRoster(); renderRace(); renderVault();
   if (typeof renderExtras === "function") renderExtras();
+  // Item names arrive with the clan load, after the picks panel has already
+  // drawn itself from the snapshot file. Redraw so "item #101" becomes a name.
+  if (typeof renderPicks === "function" && typeof picksDoc !== "undefined" && picksDoc) renderPicks();
   const sel = $("#logMember"), cur = sel.value;
   sel.innerHTML = '<option value="">All members</option>' +
     state.members.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join("");
@@ -3581,9 +3645,272 @@ function initCreation(){
 </script>
 <script>
 "use strict";
+
+/* =====================================================================
+   What to trade right now
+   ---------------------------------------------------------------------
+   Reads data/market/latest.json — written hourly by the Action — so this
+   panel costs one same-origin file and no API calls at all.
+
+   The trade it describes is a patient flip, because that is the only kind
+   that makes money here: post a buy above the best bid, wait to be filled,
+   then post a sell under the best ask and wait again. Crossing the spread
+   both ways loses on every trade — on one real item the round trip was
+   buy 15,000 / sell 10,760 less 1% tax, a loss of 4,348 a unit. The spread
+   exists precisely because somebody waits.
+   ===================================================================== */
+
+const PICKS_URL = "./data/market/latest.json";
+
+const PICK = {
+  TAX: 0.01,          // confirmed from /api/Configuration/market-settings
+  /* You are first in the queue at your price, but not the only trader. A third
+     of the item's flow is a deliberately modest assumption — better to promise
+     six hours and take four than the reverse. */
+  FLOW_SHARE: 0.33,
+  TARGET_HOURS: 24,   // "profit within a day" is the brief
+  MIN_VOL: 20,        // fewer trades a day than this and a fill is a coin flip
+  MIN_MARGIN: 0.04,   // under 4% net, one bad tick eats the trade
+  MAX_OVER_FAIR: 1.05,// never buy above what the item actually trades for
+  FANTASY: 1.60,      // an ask far above fair value is a wish, not a price
+  KNIFE: 0.80,        // today's average this far under the week's = falling
+  SHOW: 3
+};
+
+let picksGold = 10000000;
+/* One character's worth of offer slots. Alts would allow 18, but that means
+   logging in and moving gold between characters, which is work — and the whole
+   point of this panel is that the clan doesn't want work. */
+let picksSlots = 6;
+let picksDoc = null;
+
+/** Accepts 10m, 1.5b, 250k, 1kk, or plain digits. */
+function parseGoldInput(raw){
+  const t = String(raw || "").toLowerCase().replace(/[\s,_]/g, "");
+  const m = t.match(/^(\d+(?:\.\d+)?)(kk|k|m|b|t)?$/);
+  if (!m) return null;
+  const mult = { k:1e3, kk:1e6, m:1e6, b:1e9, t:1e12 }[m[2]] || 1;
+  return Math.round(parseFloat(m[1]) * mult);
+}
+
+async function loadPicks(){
+  try {
+    const res = await fetch(PICKS_URL, { cache:"no-store" });
+    if (!res.ok) return null;
+    const doc = await res.json();
+    return (doc && doc.items) ? doc : null;
+  } catch { return null; }
+}
+
+/**
+ * Work out the trade for one item, or say why there isn't one.
+ * Returns null when the item is unusable, or a plan when it is.
+ */
+function planTrade(id, r, gold){
+  const bid = Number(r.bid) || 0, ask = Number(r.ask) || 0;
+  if (!bid || !ask) return null;                       // one-sided: no round trip
+
+  const buy  = bid + 1;                                // outbid the queue by one
+  const sell = ask - 1;                                // undercut it by one
+  if (sell <= buy) return null;
+
+  const net = sell * (1 - PICK.TAX) - buy;             // per unit, after tax
+  if (net <= 0) return null;
+  const margin = net / buy;
+  if (margin < PICK.MIN_MARGIN) return null;
+
+  const vol = Number(r.volPerDay) || 0;
+  if (vol < PICK.MIN_VOL) return null;
+
+  const fair = Number(r.fair) || 0;
+  if (fair){
+    if (buy > fair * PICK.MAX_OVER_FAIR) return null;  // paying over the odds
+    if (sell > fair * PICK.FANTASY) return null;       // exit price nobody pays
+  }
+  const a1 = Number(r.avg1d) || 0, a7 = Number(r.avg7) || 0;
+  if (a1 && a7 && a1 < a7 * PICK.KNIFE) return null;   // price falling hard
+
+  /* Both legs have to come out of the same daily flow, so the honest cap is
+     how many round trips that flow supports inside the target window. */
+  const perHour = (vol / 24) * PICK.FLOW_SHARE;
+  const byFlow  = Math.floor((perHour * PICK.TARGET_HOURS) / 2);
+  const byGold  = Math.floor(gold / buy);
+  const qty     = Math.max(0, Math.min(byFlow, byGold));
+  if (qty < 1) return null;
+
+  const hours = perHour > 0 ? (2 * qty) / perHour : Infinity;
+  const limitedBy = byFlow <= byGold ? "flow" : "gold";
+
+  return {
+    id, buy, sell, net, margin, qty, vol, fair,
+    profit: qty * net,
+    hours,
+    limitedBy,
+    bidHeldH: r.bidHeldH, askHeldH: r.askHeldH, moves24: r.moves24 || 0,
+    spend: qty * buy
+  };
+}
+
+const itemNameFor = id => {
+  const it = state.itemById ? state.itemById.get(Number(id)) : null;
+  if (!it) return "item #" + id;
+  return typeof itemLabel === "function" ? itemLabel(it.name) : it.name;
+};
+
+/** Plain-English confidence, from the two things history can tell us. */
+function pickWhy(p){
+  const bits = [];
+  bits.push(p.vol >= 1000 ? "Trades constantly"
+          : p.vol >= 200  ? "Trades steadily"
+          : "Trades a few dozen times a day");
+  if (p.bidHeldH != null && p.bidHeldH >= 3){
+    bits.push(`the buy side has held for ${p.bidHeldH}h`);
+  } else if (p.bidHeldH != null && p.moves24 >= 12){
+    bits.push("prices move around a lot, so check before committing");
+  }
+  return bits.join(" · ");
+}
+
+function renderPicks(){
+  const host = $("#picksList"), more = $("#picksMore"), hint = $("#picksHint");
+  if (!picksDoc){
+    hint.innerHTML = 'No market snapshot yet. The hourly job writes one to ' +
+      '<code>data/market/latest.json</code>; until it has run, use the full list below.';
+    $("#picksControls").hidden = true;
+    host.innerHTML = ""; more.innerHTML = "";
+    return;
+  }
+  $("#picksControls").hidden = false;
+
+  const age = (Date.now() - new Date(picksDoc.capturedAt).getTime()) / 3600000;
+  const stale = age > 3;
+  hint.innerHTML =
+    `Prices from ${stale ? '<span class="stale">' : ""}${ago(age)} ago${stale ? "</span>" : ""} · ` +
+    `${num(picksDoc.counts ? picksDoc.counts.twoSided : 0)} items have both a buyer and a seller · ` +
+    `you post a buy, wait, then post a sell — crossing both ways loses money after tax`;
+
+  /* Size every candidate against the WHOLE purse first, then allocate. An
+     offer slot is the scarce thing, not gold: six slots is six positions, and
+     showing three of them left 98% of a 500M purse sitting idle. */
+  const all = [];
+  for (const [id, r] of Object.entries(picksDoc.items)){
+    const p = planTrade(id, r, picksGold);
+    if (p) all.push(p);
+  }
+  all.sort((a, b) => b.profit - a.profit);
+
+  // Greedy by profit per slot, re-sizing each position against what's left.
+  const plans = [];
+  let goldLeft = picksGold, slotsLeft = picksSlots;
+  /* Once the big positions are funded, what's left is crumbs — enough for one
+     unit of something. Spending a scarce offer slot on a 3K trade beside an
+     800K one is worse than leaving the slot empty, so a position has to be
+     worth a fiftieth of the best one to earn its place. */
+  const worthASlot = best => Math.max(1, best * 0.02);
+
+  for (const cand of all){
+    if (slotsLeft <= 0 || goldLeft < cand.buy) break;
+    const qty = Math.min(cand.qty, Math.floor(goldLeft / cand.buy));
+    if (qty < 1) continue;
+
+    const profit = qty * cand.net;
+    if (plans.length && profit < worthASlot(plans[0].profit)) continue;
+
+    const p = { ...cand, qty, spend: qty * cand.buy, profit };
+    p.hours = cand.hours * (qty / cand.qty || 1);
+    // Re-sized, so the reason for the cap may have changed: if we couldn't take
+    // the full flow-sized position, gold was what stopped us, not the market.
+    p.limitedBy = qty < cand.qty ? "gold" : cand.limitedBy;
+    plans.push(p);
+    goldLeft -= p.spend;
+    slotsLeft--;
+  }
+
+  if (!plans.length){
+    host.innerHTML = `<div class="empty" style="padding:12px 0">Nothing clears the bar at
+      ${gold(picksGold)} right now — every item is either too thin to fill, priced above what
+      it actually trades for, or the spread doesn't survive the 1% tax.</div>`;
+    more.innerHTML = "";
+    return;
+  }
+
+  host.innerHTML = plans.slice(0, PICK.SHOW).map((p, i) => `
+    <div class="pick ${i === 0 ? "top" : ""}">
+      <div class="rank">${i === 0 ? "Best use of your gold" : "Also worth doing"}</div>
+      <div class="do">
+        Buy <b>${num(p.qty)} ${esc(itemNameFor(p.id))}</b> at <span class="buy">${num(p.buy)}</span>,
+        then sell them at <span class="sell">${num(p.sell)}</span>.
+      </div>
+      <div class="gain">Profit <b>${gold(p.profit)}</b> on ${gold(p.spend)} tied up
+        — ${pct(p.margin)} a unit, roughly ${p.hours < 1 ? "under an hour" : Math.round(p.hours) + " hours"}.</div>
+      <div class="why">${esc(pickWhy(p))}.</div>
+      <div class="cap">${p.limitedBy === "flow"
+        ? `Capped at ${num(p.qty)} by how fast this item trades, not by your gold.`
+        : `Capped at ${num(p.qty)} by your gold — more would still sell.`}</div>
+    </div>`).join("");
+
+  const spent  = plans.reduce((s, p) => s + p.spend, 0);
+  const earned = plans.reduce((s, p) => s + p.profit, 0);
+  const idle   = picksGold - spent;
+
+  const rest = plans.slice(PICK.SHOW);
+  more.innerHTML =
+    `<div class="alloc">
+       <div class="atot">Using <b>${num(plans.length)}</b> of your ${num(picksSlots)} offer slots ·
+         <b>${gold(spent)}</b> working · expected <b class="pos">${gold(earned)}</b></div>
+       ${idle > picksGold * 0.05
+         ? `<div class="hint" style="margin:4px 0 0">${gold(idle)} stays idle — ${
+             plans.length >= picksSlots
+               ? "you're out of offer slots, not gold."
+               : "nothing else on the board clears the bar; the market simply isn't deep enough today."}</div>`
+         : ""}
+     </div>` +
+    (rest.length ? `<div class="restwrap">
+       <div class="uph" style="margin:12px 0 6px">The rest of the plan
+         <span class="n">${num(rest.length)}</span></div>
+       <table class="mini"><tbody>${rest.map(p => `
+         <tr><td>${esc(itemNameFor(p.id))}</td>
+             <td>${num(p.qty)} @ ${num(p.buy)}</td>
+             <td>sell ${num(p.sell)}</td>
+             <td class="pos">${gold(p.profit)}</td>
+             <td class="dim">${p.hours < 1 ? "<1h" : Math.round(p.hours) + "h"}</td></tr>`).join("")}
+       </tbody></table></div>` : "");
+}
+
+function initPicks(){
+  const input = $("#picksGold");
+  if (!input) return;
+
+  const apply = raw => {
+    const g = parseGoldInput(raw);
+    if (g == null || g < 1000) return;
+    picksGold = g;
+    $$("#picksPresets button").forEach(b =>
+      b.setAttribute("aria-pressed", String(Number(b.dataset.g) === g)));
+    renderPicks();
+  };
+
+  const slotSel = $("#picksSlots");
+  if (slotSel){
+    slotSel.onchange = () => { picksSlots = Number(slotSel.value) || 6; renderPicks(); };
+  }
+
+  input.onchange = () => apply(input.value);
+  input.onkeydown = e => { if (e.key === "Enter") apply(input.value); };
+  $$("#picksPresets button").forEach(b => b.onclick = () => {
+    input.value = abbr(Number(b.dataset.g)).toLowerCase();
+    apply(b.dataset.g);
+  });
+
+  loadPicks().then(doc => { picksDoc = doc; renderPicks(); });
+}
+</script>
+<script>
+"use strict";
 initControls();
 initExtras();
 initMarket();
+initPicks();
 initCreation();
 loadAll().then(prefetchWorldRanks);
 setInterval(loadAll, REFRESH_MS);
