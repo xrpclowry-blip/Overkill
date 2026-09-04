@@ -1,0 +1,58 @@
+name: Clan log archive
+
+# The game's clan log is a rolling window of roughly 600 entries — about
+# sixteen days. Vault deposits older than that are gone from the API, which is
+# why members' vault totals were silently shrinking. This job keeps them.
+#
+# Every four hours is well inside the window, so even a couple of failed runs
+# in a row loses nothing.
+
+on:
+  schedule:
+    - cron: "25 */4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: clan-log
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Read the clan log
+        run: node scripts/clan-log.mjs
+
+      - name: Commit the archive
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Stage first: on the very first run this file is untracked, and
+          # `git diff` on the working tree cannot see untracked files.
+          git add -A data/clan-log.json
+
+          if git diff --cached --quiet; then
+            echo "No new log entries; not committing."
+            exit 0
+          fi
+
+          git commit -m "Clan log archive $(date -u +%Y-%m-%dT%H:%MZ)"
+
+          for attempt in 1 2 3; do
+            if git push; then exit 0; fi
+            echo "Push rejected, rebasing and retrying ($attempt)…"
+            git pull --rebase --autostash || true
+            sleep 5
+          done
+          echo "Could not push after 3 attempts."
+          exit 1
