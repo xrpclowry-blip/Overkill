@@ -1407,8 +1407,10 @@ async function loadAll(){
   if (typeof loadMarket === "function") setTimeout(() => loadMarket(), 1200);
 }
 
-/* The API's clan log is a rolling window — measured at 616 entries reaching
-   back sixteen days, with skip=800 a 404. Every vault figure on this page is
+/* The API's clan log is a rolling window — the first archive run read 639
+   entries reaching back thirteen days, with skip=800 a 404. The bound is the
+   entry count, not the age, so a busy week covers fewer days than a quiet one.
+   Every vault figure on this page is
    derived from it, so as days pass, deposits stop existing and members' vault
    totals shrink toward zero on their own.
 
@@ -2136,10 +2138,10 @@ function renderVault(){
     note.hidden = false;
     note.innerHTML = a
       ? `Reading ${num(a.count)} archived log entries back to <strong>${dateShort(a.oldest)}</strong>,
-         plus everything the game still holds. The game itself only keeps about sixteen
-         days, so anything older than that survives here and nowhere else.`
-      : `<strong>No archive yet.</strong> The game's clan log only keeps about sixteen days,
-         so every figure here covers that window and no further — deposits drop out as they age.
+         plus everything the game still holds. The game itself keeps only its last
+         ~600 log entries, so anything older than that survives here and nowhere else.`
+      : `<strong>No archive yet.</strong> The game's clan log keeps only its last ~600 entries,
+         a fortnight or so, so every figure here covers that window and no further — deposits drop out as they age.
          Run the <em>Clan log archive</em> workflow once and it starts keeping them.`;
     note.className = a ? "hint" : "hint banner warn";
     if (!a) note.style.cssText = "display:block;margin:0 0 12px;font-size:12.5px";
