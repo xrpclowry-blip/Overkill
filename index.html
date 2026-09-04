@@ -296,6 +296,33 @@ input[type="search"]{min-width:180px}
 .pick .rank{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;
   color:var(--text-muted);margin-bottom:5px;font-weight:600}
 .stale{color:#e0a52e}
+/* ---------- skilling ---------- */
+.skgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px}
+.skbadge{background:var(--surface-2);border:1px solid var(--border-soft);border-radius:10px;
+  padding:14px;cursor:pointer;text-align:left;font-family:inherit;color:var(--text-primary);
+  display:flex;flex-direction:column;gap:4px}
+.skbadge:hover{background:var(--surface-3);border-color:var(--border)}
+.skbadge .nm{font-size:14px;font-weight:600}
+.skbadge .bt{font-size:12px;color:#3fc294;font-variant-numeric:tabular-nums}
+.skbadge .bt span{color:var(--text-muted)}
+.sicon.big{width:26px;height:26px}
+.skcards{display:grid;grid-template-columns:repeat(auto-fill,minmax(268px,1fr));gap:10px}
+.skcard{background:var(--surface-2);border:1px solid var(--border-soft);border-radius:10px;padding:12px 14px}
+.skcard.loss{border-color:#e6676733;background:#e6676708}
+.skcard .hd{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.skcard .hd .t{font-size:14px;font-weight:600}
+.skcard .hd .lv{font-size:11px;color:var(--text-muted)}
+.skcard .sub{font-size:11.5px;color:var(--text-muted);margin-top:2px}
+.skcard .mats{display:flex;flex-wrap:wrap;gap:4px;margin:8px 0}
+.skcard .mat{font-size:11px;background:#ffffff08;border:1px solid var(--border-soft);
+  border-radius:5px;padding:2px 6px;color:var(--text-secondary)}
+.skcard .mat b{color:var(--text-primary)}
+.skcard .lines>div{display:flex;justify-content:space-between;font-size:12px;padding:2px 0}
+.skcard .lines>div span{color:var(--text-muted)}
+.skcard .lines>div b{font-variant-numeric:tabular-nums}
+.skcard .lines .big{font-size:13.5px;padding-top:4px}
+.skcard .cap{font-size:11.5px;color:var(--text-muted);margin-top:8px;
+  border-top:1px solid var(--border-soft);padding-top:7px}
 /* The full table is for people who want to argue with the picks. Most members
    should never need to open it, so it stays shut by default. */
 .fulllist{margin-top:14px;display:block}
@@ -422,7 +449,7 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
       <button role="tab" data-view="cup" aria-selected="false">Clan Cup</button>
       <button role="tab" data-view="ranks" aria-selected="false">Rankings</button>
       <button role="tab" data-view="market" aria-selected="false">Market</button>
-      <button role="tab" data-view="skilling" aria-selected="false">What's worth doing</button>
+      <button role="tab" data-view="skilling" aria-selected="false">Skilling</button>
       <button role="tab" data-view="vault" aria-selected="false">Vault</button>
       <button role="tab" data-view="trends" aria-selected="false" id="tabTrends" hidden>Trends</button>
       <button role="tab" data-view="activity" aria-selected="false">Activity log</button>
@@ -729,10 +756,9 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
   <!-- TRENDS -->
   <section class="view" id="view-skilling" hidden>
     <div class="panel">
-      <h2>What's worth doing</h2>
+      <h2>Skilling</h2>
       <p class="hint" id="skillHint">Loading…</p>
       <div class="controls">
-        <select id="skillPick"></select>
         <label class="capbar">Your speed
           <select id="skillSpeed">
             <option value="5">5.00× — 80%, capped (gathering with Gatherers)</option>
@@ -743,10 +769,7 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
           </select>
         </label>
       </div>
-      <div class="tbl-scroll"><table id="skillTable"></table></div>
-      <p class="hint" style="margin:12px 0 0">Ranking within a skill is the same
-        whatever your speed — it only changes the absolute numbers, and comparisons
-        between skills.</p>
+      <div id="skillBody"></div>
     </div>
   </section>
 
@@ -4014,216 +4037,234 @@ function initPicks(){
 "use strict";
 
 /* =====================================================================
-   What's worth doing
+   Skilling
    ---------------------------------------------------------------------
-   224 tasks from data/tasks.json, priced against the hourly market
-   snapshot. Both files are ours, so this costs no API calls.
+   A tool about time, not about trading. It shares one file with the
+   Market tab — the hourly price snapshot — and nothing else.
 
-   Two decisions worth knowing about:
+   Three things the first version got wrong, all of them the same
+   mistake in different clothes: assuming the market is infinitely deep
+   and infinitely generous.
 
-   Prices use the traded average, not the bid or the ask. Whether you get
-   more than that depends on how patiently you trade, which is the Market
-   tab's job — mixing the two would make a skill look good or bad because
-   of the spread rather than because of the activity.
+   1. Materials cost the ASK and product fetches the BID. Valuing both
+      at the traded average made astronomical bars look profitable when
+      the materials cost 1.14M and the bar bids at 900K. The spread is a
+      real cost of skilling, not noise to average out.
 
-   Speed cancels out WITHIN a skill: every task in it shares your one
-   multiplier, so the ranking is identical for you, for me, and for a
-   member in starter gear. It only matters when comparing skills, which
-   is why the multiplier is one control at the top rather than a form.
+   2. You cannot make unlimited anything. If 300 astronomical ore trade
+      in a day you cannot smelt 4,000 bars, whatever the clock says.
+      Every rate is capped by what the market can supply and absorb.
+
+   3. A dropdown over an eight-column table is a spreadsheet. Skills are
+      badges you open; tasks are cards, laid out the way the game lays
+      them out.
    ===================================================================== */
 
 const TASKS_URL  = "./data/tasks.json";
-/* The same snapshot file the Market tab reads, loaded independently. These are
-   two different tools that happen to share a price source: skilling is gold per
-   hour of activity, trading is gold per offer slot, and the calculator must not
-   stop working because a market panel hasn't been opened. */
 const PRICES_URL = "./data/market/latest.json";
-let skillPrices = null;
-const SKILL_TAX = 0.01;          // selling what you make pays the same 1%
+const SKILL_TAX  = 0.01;
 
-/** Task names are loc keys: "coal_ore" -> "Coal ore". spaceCase only splits
-    camelCase, so it left the underscore sitting in the middle of the word. */
+let taskDoc = null, skillPrices = null;
+let skillOpen = "";          // "" = the badge grid
+let skillSpeed = 4.0;
+
+/** "coal_ore" -> "Coal ore" */
 const taskName = raw => {
   const t = String(raw || "").replace(/_/g, " ").trim();
   return t ? t[0].toUpperCase() + t.slice(1) : "";
 };
 
-/* Upgrades that change the ECONOMICS of a task, not its speed. Ignoring these
-   made papaya and titanium bars read as losses when both are profitable — the
-   worst kind of wrong, because a member would believe it and stop.
-
-   Effects are quoted at max tier, as the game states them, and scaled linearly
-   by the tier a player actually holds (every one of these divides evenly: 20%
-   a tier for the doublers, 10% for the savers, 33% for plank bargain).
-
-   Coal is item 31; "not use up ORE" excludes it, and excludes the top two bar
-   tiers, exactly as the upgrade says. */
+/* Upgrades that change a task's economics rather than its speed. Quoted at max
+   tier as the game states them, scaled by the tier a member actually holds. */
 const COAL_ID = 31;
 const MODS = {
-  Fishing:     { key:"theFisherman",          max:5, out:  +1.0,
-                 why:"The fisherman doubles your catch" },
-  Woodcutting: { key:"theLumberjack",         max:5, out:  +1.0,
-                 why:"The lumberjack doubles your logs" },
-  Foraging:    { key:"powerForager",          max:5, out:  +0.5,
-                 why:"Power forager, 50% chance to double" },
-  Farming:     { key:"farmingTrickery",       max:5, cost: -0.5,
-                 why:"Farming trickery saves half your seeds" },
-  Carpentry:   { key:"plankBargain",          max:3, cost: -1.0,
-                 why:"Plank bargain removes the material cost" },
-  Smithing:    { key:"smeltingMagic",         max:3, oreOnly: -0.3,
-                 why:"Smelting magic saves 30% of the ore" }
+  Fishing:     { key:"theFisherman",    max:5, out:  +1.0, why:"The fisherman doubles your catch" },
+  Woodcutting: { key:"theLumberjack",   max:5, out:  +1.0, why:"The lumberjack doubles your logs" },
+  Foraging:    { key:"powerForager",    max:5, out:  +0.5, why:"Power forager, 50% chance to double" },
+  Farming:     { key:"farmingTrickery", max:5, cost: -0.5, why:"Farming trickery saves half your seeds" },
+  Carpentry:   { key:"plankBargain",    max:3, cost: -1.0, why:"Plank bargain removes the material cost" },
+  Smithing:    { key:"smeltingMagic",   max:3, oreOnly: -0.3, why:"Smelting magic saves 30% of the ore" }
 };
 
-/** Tier held for an upgrade, from whichever profile we have. Default: maxed. */
 function modTier(m){
-  const ups = state.members && state.members.length
-    ? (state.members.find(x => x.profile && x.profile.upgrades) || {}).profile
-    : null;
-  const held = ups && ups.upgrades ? Number(ups.upgrades[m.key]) : NaN;
+  const p = (state.members || []).find(x => x.profile && x.profile.upgrades);
+  const held = p ? Number(p.profile.upgrades[m.key]) : NaN;
   return Number.isFinite(held) ? Math.min(held, m.max) : m.max;
 }
 
-let taskDoc = null;
-let skillPick = "";
-/* 4.0x is 75% — tool, cape and enchanted jewellery, the shape of a geared
-   account. Gathering skills reach 5.0x with the clan's Gatherers bonus. */
-let skillSpeed = 4.0;
+const priceRow = id => (skillPrices && skillPrices.items)
+  ? skillPrices.items[String(id)] : null;
 
-async function loadTasks(){
-  try {
-    const res = await fetch(TASKS_URL, { cache:"no-store" });
-    if (!res.ok) return null;
-    const doc = await res.json();
-    return (doc && doc.tasks) ? doc : null;
-  } catch { return null; }
+/** What you PAY to get one now: the lowest standing sell offer. */
+function buyPrice(id){
+  const r = priceRow(id); if (!r) return null;
+  return Number(r.ask) || Number(r.avg7) || Number(r.fair) || null;
 }
-
-/** What one unit of an item is worth right now, from the market snapshot. */
-function itemValue(id){
-  const src = skillPrices && skillPrices.items ? skillPrices : null;
-  const r = src ? src.items[String(id)] : null;
-  if (!r) return null;
-  return Number(r.avg7) || Number(r.fair) || Number(r.avg1d) ||
-         (Number(r.bid) && Number(r.ask) ? Math.round((r.bid + r.ask) / 2) : null);
+/** What you RECEIVE for one now: the highest standing buy offer, less tax. */
+function sellPrice(id){
+  const r = priceRow(id); if (!r) return null;
+  return Number(r.bid) || Number(r.avg7) || Number(r.fair) || null;
 }
+const dailyVolume = id => {
+  const r = priceRow(id);
+  return r ? (Number(r.volPerDay) || 0) : 0;
+};
 
 function planTask(t, skill){
-  const outVal = itemValue(t.out);
-  if (!outVal) return null;                    // can't price the product
+  const outUnit = sellPrice(t.out);
+  if (!outUnit) return null;
 
   const m = MODS[skill];
-  const frac = m ? modTier(m) / m.max : 0;     // how much of the effect is unlocked
-  // Astronomical and Otherworldly bars are excluded from smelting magic.
+  const frac = m ? modTier(m) / m.max : 0;
   const smeltable = m && m.oreOnly && /_bar$/.test(t.name) &&
                     !/^(astronomical|otherworldly)_/.test(t.name);
 
-  let cost = 0, unpriced = false;
+  const parts = [];
+  let cost = 0;
   for (const [id, qty] of (t.costs || [])){
-    const v = itemValue(id);
-    if (!v){ unpriced = true; break; }
+    const unit = buyPrice(id);
+    if (!unit) return null;                    // an unpriced input makes it fiction
     let q = qty;
-    if (m && m.cost) q *= (1 + m.cost * frac);
+    if (m && m.cost)                q *= (1 + m.cost * frac);
     if (smeltable && id !== COAL_ID) q *= (1 + m.oreOnly * frac);
-    cost += v * q;
+    cost += unit * q;
+    parts.push({ id, qty, used:q, unit, vol: dailyVolume(id) });
   }
-  if (unpriced) return null;                   // an unpriced input makes the rest fiction
 
-  const yieldMul = m && m.out ? 1 + m.out * frac : 1;
-  const revenue = t.n * yieldMul * outVal * (1 - SKILL_TAX);
+  const yieldMul  = m && m.out ? 1 + m.out * frac : 1;
+  const made      = t.n * yieldMul;
+  const revenue   = made * outUnit * (1 - SKILL_TAX);
   const perAction = revenue - cost;
-  const instant = !t.ms;
-  const seconds = instant ? 0 : (t.ms / 1000) / skillSpeed;
-  const perHour = instant ? null : (3600 / seconds) * perAction;
+  const instant   = !t.ms;
+  const seconds   = instant ? 0 : (t.ms / 1000) / skillSpeed;
+
+  /* How many actions a day the CLOCK allows… */
+  const byClock = instant ? Infinity : Math.floor(86400 / seconds);
+
+  /* …and how many the MARKET allows. You can't buy more of an input than trades
+     in a day, nor sell more product than the market absorbs. This is what stops
+     "smelt astronomical bars all day" when only a few hundred ore change hands. */
+  let byMarket = Math.floor(dailyVolume(t.out) / made) || 0;
+  let scarce = { what: itemNameFor(t.out), vol: dailyVolume(t.out) };
+  for (const p of parts){
+    const cap = Math.floor(p.vol / p.used) || 0;
+    if (cap < byMarket){ byMarket = cap; scarce = { what: itemNameFor(p.id), vol: p.vol }; }
+  }
+
+  const actions = Math.min(byClock, byMarket);
+  const perDay  = actions === Infinity ? null : actions * perAction;
 
   return {
-    ...t, cost, revenue, perAction, seconds, instant,
-    modWhy: (m && frac > 0 && (m.out || m.cost || smeltable)) ? m.why : null,
-    perHour, perDay: perHour == null ? null : perHour * 24,
-    xpHour: instant || !t.xp ? null : (3600 / seconds) * t.xp
+    ...t, skill, parts, cost, revenue, made, outUnit, perAction, seconds, instant,
+    byClock, byMarket, actions, perDay,
+    limited: byMarket < byClock ? "market" : "time",
+    scarce,
+    xpDay: (actions === Infinity || !t.xp) ? null : actions * t.xp,
+    modWhy: (m && frac > 0) ? m.why : null
   };
 }
 
-function renderSkills(){
-  const host = $("#skillTable"), hint = $("#skillHint");
-  if (!host) return;
+function skillRows(skill){
+  return (taskDoc.tasks[skill] || []).map(t => planTask(t, skill)).filter(Boolean);
+}
 
-  if (!taskDoc){
-    hint.textContent = "No task data yet — the asset job writes data/tasks.json.";
-    host.innerHTML = ""; return;
-  }
-  if (!skillPrices){
-    hint.textContent = "No price snapshot yet — the hourly job writes data/market/latest.json.";
-    host.innerHTML = ""; return;
-  }
-
+/* ---------------- badge grid ---------------- */
+function renderSkillGrid(){
+  const host = $("#skillBody");
   const names = Object.keys(taskDoc.tasks).sort();
-  if (!skillPick || !taskDoc.tasks[skillPick]) skillPick = names[0];
+  $("#skillHint").innerHTML =
+    `Materials priced at what you'd <strong>pay</strong>, output at what you'd ` +
+    `<strong>receive</strong>, after the 1% tax · rates capped by what the market ` +
+    `actually trades · prices from ${ago((Date.now() - new Date(skillPrices.capturedAt).getTime())/3600000)} ago`;
 
-  const sel = $("#skillPick");
-  if (sel && sel.options.length !== names.length){
-    sel.innerHTML = names.map(n =>
-      `<option value="${esc(n)}">${esc(spaceCase(n))}</option>`).join("");
-    sel.value = skillPick;
-  }
+  host.innerHTML = `<div class="skgrid">${names.map(n => {
+    const rows = skillRows(n).filter(r => r.perDay != null);
+    const best = rows.sort((a, b) => b.perDay - a.perDay)[0];
+    return `<button class="skbadge" data-skill="${esc(n)}">
+      ${skillIcon(n.toLowerCase(), "big")}
+      <div class="nm">${esc(spaceCase(n))}</div>
+      <div class="bt">${best
+        ? `${gold(best.perDay)}<span>/day · ${esc(taskName(best.name))}</span>`
+        : '<span class="dim">nothing priceable</span>'}</div>
+    </button>`;
+  }).join("")}</div>`;
 
-  const rows = taskDoc.tasks[skillPick].map(t => planTask(t, skillPick)).filter(Boolean);
-  const priced = rows.length, total = taskDoc.tasks[skillPick].length;
+  $$(".skbadge").forEach(b => b.onclick = () => { skillOpen = b.dataset.skill; renderSkills(); });
+}
 
-  // Instant tasks have no per-hour rate, so rank them separately by profit.
-  const timed   = rows.filter(r => !r.instant).sort((a, b) => b.perDay - a.perDay);
-  const instant = rows.filter(r =>  r.instant).sort((a, b) => b.perAction - a.perAction);
+/* ---------------- one skill ---------------- */
+function renderSkillCards(){
+  const host = $("#skillBody");
+  const rows = skillRows(skillOpen);
+  const total = (taskDoc.tasks[skillOpen] || []).length;
+  const mod = rows.find(r => r.modWhy);
 
-  hint.innerHTML =
-    `${num(priced)} of ${num(total)} tasks priced · valued at the 7-day traded average, ` +
-    `after the 1% sell tax · ${skillSpeed.toFixed(2)}× speed` +
-    (rows.find(r => r.modWhy) ? ` · ${esc(rows.find(r => r.modWhy).modWhy)}` : "") +
-    (priced < total ? ` · ${num(total - priced)} skipped because an item has no market price` : "");
+  $("#skillHint").innerHTML =
+    `<a href="#" id="skBack">&larr; all skills</a> · ${num(rows.length)} of ${num(total)} priced` +
+    (mod ? ` · ${esc(mod.modWhy)}` : "") +
+    ` · ${skillSpeed.toFixed(2)}× speed`;
 
-  const money = v => `<span class="${v >= 0 ? "pos" : "neg"}">${v >= 0 ? "" : "−"}${gold(Math.abs(v))}</span>`;
+  rows.sort((a, b) => (b.perDay ?? b.perAction) - (a.perDay ?? a.perAction));
 
-  host.innerHTML =
-    (timed.length ? `<thead><tr>
-        <th>Task</th><th>Lvl</th><th>Each</th><th>Materials</th>
-        <th>Profit each</th><th>Per hour</th><th>Per day</th><th>Xp/hr</th>
-      </tr></thead><tbody>${timed.map(r => `<tr>
-        <td>${esc(taskName(r.name))}</td>
-        <td>${num(r.lvl)}</td>
-        <td>${r.seconds.toFixed(1)}s</td>
-        <td>${r.cost ? gold(r.cost) : '<span class="dim">—</span>'}</td>
-        <td>${money(r.perAction)}</td>
-        <td>${money(r.perHour)}</td>
-        <td><strong>${money(r.perDay)}</strong></td>
-        <td class="dim">${r.xpHour ? abbr(r.xpHour) : "—"}</td>
-      </tr>`).join("")}</tbody>` : "") +
-    (instant.length ? `<tbody><tr><td colspan="8" class="dim"
-        style="padding-top:14px">Instant — no processing time, so profit is per craft, not per hour</td></tr>
-      ${instant.map(r => `<tr>
-        <td>${esc(taskName(r.name))}</td>
-        <td>${num(r.lvl)}</td>
-        <td class="dim">instant</td>
-        <td>${r.cost ? gold(r.cost) : '<span class="dim">—</span>'}</td>
-        <td><strong>${money(r.perAction)}</strong></td>
-        <td class="dim">—</td><td class="dim">—</td>
-        <td class="dim">${r.xp ? num(r.xp) : "—"}</td>
-      </tr>`).join("")}</tbody>` : "");
+  host.innerHTML = rows.length ? `<div class="skcards">${rows.map(r => {
+    const loss = r.perAction <= 0;
+    return `<div class="skcard ${loss ? "loss" : ""}">
+      <div class="hd">
+        <span class="t">${esc(taskName(r.name))}</span>
+        <span class="lv">Lvl ${num(r.lvl)}</span>
+      </div>
+      <div class="sub">${r.instant ? "instant" : r.seconds.toFixed(1) + "s"} ·
+        makes ${r.made % 1 ? r.made.toFixed(1) : num(r.made)} ·
+        ${r.xp ? num(r.xp) + " xp" : "no xp"}</div>
 
-  if (!timed.length && !instant.length){
-    host.innerHTML = `<tbody><tr><td class="empty" style="padding:12px 0">
-      Nothing in ${esc(spaceCase(skillPick))} can be priced from the market yet.</td></tr></tbody>`;
-  }
+      <div class="mats">${r.parts.length
+        ? r.parts.map(p => `<span class="mat">${num(p.qty)}× ${esc(itemNameFor(p.id))}
+            <b>${gold(p.unit)}</b></span>`).join("")
+        : '<span class="mat dim">no materials</span>'}</div>
+
+      <div class="lines">
+        <div><span>Materials</span><b>${r.cost ? gold(r.cost) : "—"}</b></div>
+        <div><span>Sells for</span><b>${gold(r.revenue)}</b></div>
+        <div class="big"><span>Profit each</span>
+          <b class="${loss ? "neg" : "pos"}">${loss ? "−" : ""}${gold(Math.abs(r.perAction))}</b></div>
+        ${r.perDay != null ? `<div class="big"><span>Per day</span>
+          <b class="${r.perDay < 0 ? "neg" : "pos"}">${r.perDay < 0 ? "−" : ""}${gold(Math.abs(r.perDay))}</b></div>` : ""}
+      </div>
+
+      <div class="cap">${loss
+        ? `Costs more to make than it sells for.`
+        : r.instant
+          ? `Instant — profit is per craft.`
+          : r.limited === "market"
+            ? `Capped at ${num(r.actions)} a day by the market: only ${num(r.scarce.vol)}
+               ${esc(r.scarce.what)} trade in a day.`
+            : `${num(r.actions)} a day at this speed — the market can absorb it.`}</div>
+    </div>`;
+  }).join("")}</div>` :
+    `<div class="empty" style="padding:12px 0">Nothing in ${esc(spaceCase(skillOpen))}
+      can be priced from the market yet.</div>`;
+
+  const back = $("#skBack");
+  if (back) back.onclick = e => { e.preventDefault(); skillOpen = ""; renderSkills(); };
+}
+
+function renderSkills(){
+  const host = $("#skillBody"), hint = $("#skillHint");
+  if (!host) return;
+  if (!taskDoc){ hint.textContent = "No task data yet — the asset job writes data/tasks.json."; host.innerHTML = ""; return; }
+  if (!skillPrices){ hint.textContent = "No price snapshot yet — the hourly job writes data/market/latest.json."; host.innerHTML = ""; return; }
+  if (skillOpen && taskDoc.tasks[skillOpen]) renderSkillCards(); else renderSkillGrid();
 }
 
 function initSkills(){
-  const sel = $("#skillPick");
-  if (!sel) return;
-  sel.onchange = () => { skillPick = sel.value; renderSkills(); };
+  if (!$("#skillBody")) return;
   const sp = $("#skillSpeed");
   if (sp) sp.onchange = () => { skillSpeed = Number(sp.value) || 4; renderSkills(); };
   Promise.all([
-    loadTasks(),
+    fetch(TASKS_URL,  { cache:"no-store" }).then(r => r.ok ? r.json() : null).catch(() => null),
     fetch(PRICES_URL, { cache:"no-store" }).then(r => r.ok ? r.json() : null).catch(() => null)
   ]).then(([tasks, prices]) => {
-    taskDoc = tasks;
+    taskDoc = (tasks && tasks.tasks) ? tasks : null;
     skillPrices = (prices && prices.items) ? prices : null;
     renderSkills();
   });
