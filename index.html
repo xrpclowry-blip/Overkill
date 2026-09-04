@@ -296,6 +296,16 @@ input[type="search"]{min-width:180px}
 .pick .rank{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;
   color:var(--text-muted);margin-bottom:5px;font-weight:600}
 .stale{color:#e0a52e}
+/* The full table is for people who want to argue with the picks. Most members
+   should never need to open it, so it stays shut by default. */
+.fulllist{margin-top:14px;display:block}
+.fulllist>summary{cursor:pointer;list-style:none;color:var(--text-muted);font-size:12.5px;
+  padding:10px 14px;background:var(--surface-1);border:1px solid var(--border-soft);
+  border-radius:var(--radius);user-select:none}
+.fulllist>summary::-webkit-details-marker{display:none}
+.fulllist>summary:hover{color:var(--text-primary)}
+.fulllist>summary::before{content:"\25B8  "}
+.fulllist[open]>summary::before{content:"\25BE  "}
 .alloc{margin-top:4px;padding-top:10px;border-top:1px solid var(--border-soft)}
 .atot{font-size:13px;color:var(--text-secondary)}
 .atot b{color:var(--text-primary)}
@@ -412,6 +422,7 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
       <button role="tab" data-view="cup" aria-selected="false">Clan Cup</button>
       <button role="tab" data-view="ranks" aria-selected="false">Rankings</button>
       <button role="tab" data-view="market" aria-selected="false">Market</button>
+      <button role="tab" data-view="skilling" aria-selected="false">What's worth doing</button>
       <button role="tab" data-view="vault" aria-selected="false">Vault</button>
       <button role="tab" data-view="trends" aria-selected="false" id="tabTrends" hidden>Trends</button>
       <button role="tab" data-view="activity" aria-selected="false">Activity log</button>
@@ -608,6 +619,12 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
           <button data-g="100000000">100M</button>
           <button data-g="500000000">500M</button>
         </div>
+        <label class="capbar">Style
+          <select id="picksMode">
+            <option value="patient" selected>Patient — best bid, wait for a seller</option>
+            <option value="quick">Quick — meet the market, turn over today</option>
+          </select>
+        </label>
         <label class="capbar">Offer slots
           <select id="picksSlots">
             <option value="6" selected>6 — one character, premium</option>
@@ -620,6 +637,9 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
       <div id="picksList"></div>
       <div id="picksMore"></div>
     </div>
+
+    <details class="fulllist">
+      <summary>Show the full item list — every candidate, with filters and the reasons for skipping</summary>
 
     <div id="mktLoading" class="panel" style="margin-top:14px" hidden>
       <h2>Reading the market</h2>
@@ -703,9 +723,33 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
     </div>
 
     <div id="mktError" class="banner err" hidden></div>
+    </details>
   </section>
 
   <!-- TRENDS -->
+  <section class="view" id="view-skilling" hidden>
+    <div class="panel">
+      <h2>What's worth doing</h2>
+      <p class="hint" id="skillHint">Loading…</p>
+      <div class="controls">
+        <select id="skillPick"></select>
+        <label class="capbar">Your speed
+          <select id="skillSpeed">
+            <option value="5">5.00× — 80%, capped (gathering with Gatherers)</option>
+            <option value="4" selected>4.00× — 75%, geared</option>
+            <option value="2.86">2.86× — 65%, no potion up</option>
+            <option value="2">2.00× — 50%, no outfit (smithing)</option>
+            <option value="1">1.00× — base, no gear</option>
+          </select>
+        </label>
+      </div>
+      <div class="tbl-scroll"><table id="skillTable"></table></div>
+      <p class="hint" style="margin:12px 0 0">Ranking within a skill is the same
+        whatever your speed — it only changes the absolute numbers, and comparisons
+        between skills.</p>
+    </div>
+  </section>
+
   <section class="view" id="view-trends" hidden>
     <div class="tiles" id="trendTiles"></div>
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(340px,1fr))">
@@ -3672,8 +3716,24 @@ const PICK = {
   MIN_VOL: 20,        // fewer trades a day than this and a fill is a coin flip
   MIN_MARGIN: 0.04,   // under 4% net, one bad tick eats the trade
   MAX_OVER_FAIR: 1.05,// never buy above what the item actually trades for
-  FANTASY: 1.60,      // an ask far above fair value is a wish, not a price
   KNIFE: 0.80,        // today's average this far under the week's = falling
+  /* How far either side of the traded price you're willing to sit.
+     The resting book is the RESIDUE — the orders nobody wanted. Papaya seed
+     shows it plainly: 11,130 units traded at an average of 4,553 while the
+     best bid sat at 1,512 and the best ask at 5,598. Not one of those trades
+     happened at a visible quote. Real deals occur when someone posts inside
+     the gap and is taken at once, so the price to post is anchored to what the
+     item actually trades for, and only bounded by the book. */
+  EDGE: 0.06,
+  /* Patient orders don't compete for the day's flow — they wait for someone
+     who wants out. You can leave a big one sitting, so the cap is a share of
+     daily volume rather than a race against the clock. */
+  PATIENT_SHARE: 0.50,
+  /* However patient you are, you cannot sell above what people pay. A resting
+     ask of 4,000,000 on an item that trades at 120 is not an exit — it is
+     someone's daydream, and pricing against it invented a 3,920,690% margin in
+     testing. Patience buys you room above the average, not a different market. */
+  PATIENT_SELL_EDGE: 0.25,
   SHOW: 3
 };
 
@@ -3683,6 +3743,13 @@ let picksGold = 10000000;
    point of this panel is that the clan doesn't want work. */
 let picksSlots = 6;
 let picksDoc = null;
+/* Two genuinely different trades, not two settings of one:
+     patient — bid+1, ask-1. Huge margin, fills whenever someone wants to
+               liquidate. Set it and forget it.
+     quick   — post near what the item actually trades for. Perhaps 10%, but
+               it turns over today.
+   Both work. Which is right depends on whether you'd rather wait. */
+let picksMode = "patient";
 
 /** Accepts 10m, 1.5b, 250k, 1kk, or plain digits. */
 function parseGoldInput(raw){
@@ -3710,11 +3777,24 @@ function planTrade(id, r, gold){
   const bid = Number(r.bid) || 0, ask = Number(r.ask) || 0;
   if (!bid || !ask) return null;                       // one-sided: no round trip
 
-  const buy  = bid + 1;                                // outbid the queue by one
-  const sell = ask - 1;                                // undercut it by one
+  const anchor = Number(r.avg7) || Number(r.fair) || Number(r.avg1d) || 0;
+  if (!anchor) return null;             // without a traded price, no judgement
+  const patient = picksMode === "patient";
+
+  let buy, sell;
+  if (patient){
+    // Outbid the queue by one: the standing bids may be far under the traded
+    // price, and that is the point — you get filled by whoever wants out, and
+    // you are first in line when they do.
+    buy  = bid + 1;
+    sell = Math.min(ask - 1, Math.round(anchor * (1 + PICK.PATIENT_SELL_EDGE)));
+  } else {
+    buy  = Math.max(bid + 1, Math.round(anchor * (1 - PICK.EDGE)));
+    sell = Math.min(ask - 1, Math.round(anchor * (1 + PICK.EDGE)));
+  }
   if (sell <= buy) return null;
 
-  const net = sell * (1 - PICK.TAX) - buy;             // per unit, after tax
+  const net = sell * (1 - PICK.TAX) - buy;
   if (net <= 0) return null;
   const margin = net / buy;
   if (margin < PICK.MIN_MARGIN) return null;
@@ -3722,27 +3802,31 @@ function planTrade(id, r, gold){
   const vol = Number(r.volPerDay) || 0;
   if (vol < PICK.MIN_VOL) return null;
 
-  const fair = Number(r.fair) || 0;
-  if (fair){
-    if (buy > fair * PICK.MAX_OVER_FAIR) return null;  // paying over the odds
-    if (sell > fair * PICK.FANTASY) return null;       // exit price nobody pays
-  }
   const a1 = Number(r.avg1d) || 0, a7 = Number(r.avg7) || 0;
   if (a1 && a7 && a1 < a7 * PICK.KNIFE) return null;   // price falling hard
 
-  /* Both legs have to come out of the same daily flow, so the honest cap is
-     how many round trips that flow supports inside the target window. */
-  const perHour = (vol / 24) * PICK.FLOW_SHARE;
-  const byFlow  = Math.floor((perHour * PICK.TARGET_HOURS) / 2);
-  const byGold  = Math.floor(gold / buy);
-  const qty     = Math.max(0, Math.min(byFlow, byGold));
+  let qty, hours = null, limitedBy;
+  if (patient){
+    /* No race, so no clock we can honestly put on it. Size by what the item
+       moves in a day, and say plainly that the wait is unknown until the
+       hourly snapshots have watched orders like this fill. */
+    const byFlow = Math.floor(vol * PICK.PATIENT_SHARE);
+    const byGold = Math.floor(gold / buy);
+    qty = Math.max(0, Math.min(byFlow, byGold));
+    limitedBy = byFlow <= byGold ? "flow" : "gold";
+  } else {
+    const perHour = (vol / 24) * PICK.FLOW_SHARE;
+    const byFlow  = Math.floor((perHour * PICK.TARGET_HOURS) / 2);
+    const byGold  = Math.floor(gold / buy);
+    qty = Math.max(0, Math.min(byFlow, byGold));
+    hours = perHour > 0 ? (2 * qty) / perHour : Infinity;
+    limitedBy = byFlow <= byGold ? "flow" : "gold";
+  }
   if (qty < 1) return null;
 
-  const hours = perHour > 0 ? (2 * qty) / perHour : Infinity;
-  const limitedBy = byFlow <= byGold ? "flow" : "gold";
-
   return {
-    id, buy, sell, net, margin, qty, vol, fair,
+    id, buy, sell, net, margin, qty, vol, anchor, patient,
+    farFromTraded: anchor ? buy < anchor * 0.75 : false,
     profit: qty * net,
     hours,
     limitedBy,
@@ -3763,6 +3847,15 @@ function pickWhy(p){
   bits.push(p.vol >= 1000 ? "Trades constantly"
           : p.vol >= 200  ? "Trades steadily"
           : "Trades a few dozen times a day");
+  if (p.anchor) bits.push(`trades around ${num(p.anchor)}`);
+  if (p.patient){
+    bits.push(p.farFromTraded
+      ? "your bid sits well under that, so it fills when someone wants out — could be hours, could be days"
+      : "fills when someone decides to liquidate");
+  } else {
+    // Being best bid is a lease, not a freehold.
+    bits.push("expect to be outbid by a gold and to re-post — that's the cost of the faster fill");
+  }
   if (p.bidHeldH != null && p.bidHeldH >= 3){
     bits.push(`the buy side has held for ${p.bidHeldH}h`);
   } else if (p.bidHeldH != null && p.moves24 >= 12){
@@ -3787,7 +3880,11 @@ function renderPicks(){
   hint.innerHTML =
     `Prices from ${stale ? '<span class="stale">' : ""}${ago(age)} ago${stale ? "</span>" : ""} · ` +
     `${num(picksDoc.counts ? picksDoc.counts.twoSided : 0)} items have both a buyer and a seller · ` +
-    `you post a buy, wait, then post a sell — crossing both ways loses money after tax`;
+    (picksMode === "patient"
+      ? `you're the best bid by one gold — you get filled by whoever wants out, which pays ` +
+        `well but on nobody's schedule`
+      : `posting near what each item actually trades for — smaller margins, but they turn ` +
+        `over today`);
 
   /* Size every candidate against the WHOLE purse first, then allocate. An
      offer slot is the scarce thing, not gold: six slots is six positions, and
@@ -3817,7 +3914,9 @@ function renderPicks(){
     if (plans.length && profit < worthASlot(plans[0].profit)) continue;
 
     const p = { ...cand, qty, spend: qty * cand.buy, profit };
-    p.hours = cand.hours * (qty / cand.qty || 1);
+    // Patient trades carry no time estimate at all; null * anything is 0,
+    // which rendered as the confident "under an hour" this mode must not claim.
+    p.hours = cand.hours == null ? null : cand.hours * (qty / cand.qty || 1);
     // Re-sized, so the reason for the cap may have changed: if we couldn't take
     // the full flow-sized position, gold was what stopped us, not the market.
     p.limitedBy = qty < cand.qty ? "gold" : cand.limitedBy;
@@ -3842,7 +3941,8 @@ function renderPicks(){
         then sell them at <span class="sell">${num(p.sell)}</span>.
       </div>
       <div class="gain">Profit <b>${gold(p.profit)}</b> on ${gold(p.spend)} tied up
-        — ${pct(p.margin)} a unit, roughly ${p.hours < 1 ? "under an hour" : Math.round(p.hours) + " hours"}.</div>
+        — ${pct(p.margin)} a unit${p.hours == null ? ""
+          : `, roughly ${p.hours < 1 ? "under an hour" : Math.round(p.hours) + " hours"}`}.</div>
       <div class="why">${esc(pickWhy(p))}.</div>
       <div class="cap">${p.limitedBy === "flow"
         ? `Capped at ${num(p.qty)} by how fast this item trades, not by your gold.`
@@ -3890,6 +3990,11 @@ function initPicks(){
     renderPicks();
   };
 
+  const modeSel = $("#picksMode");
+  if (modeSel){
+    modeSel.onchange = () => { picksMode = modeSel.value; renderPicks(); };
+  }
+
   const slotSel = $("#picksSlots");
   if (slotSel){
     slotSel.onchange = () => { picksSlots = Number(slotSel.value) || 6; renderPicks(); };
@@ -3907,10 +4012,230 @@ function initPicks(){
 </script>
 <script>
 "use strict";
+
+/* =====================================================================
+   What's worth doing
+   ---------------------------------------------------------------------
+   224 tasks from data/tasks.json, priced against the hourly market
+   snapshot. Both files are ours, so this costs no API calls.
+
+   Two decisions worth knowing about:
+
+   Prices use the traded average, not the bid or the ask. Whether you get
+   more than that depends on how patiently you trade, which is the Market
+   tab's job — mixing the two would make a skill look good or bad because
+   of the spread rather than because of the activity.
+
+   Speed cancels out WITHIN a skill: every task in it shares your one
+   multiplier, so the ranking is identical for you, for me, and for a
+   member in starter gear. It only matters when comparing skills, which
+   is why the multiplier is one control at the top rather than a form.
+   ===================================================================== */
+
+const TASKS_URL  = "./data/tasks.json";
+/* The same snapshot file the Market tab reads, loaded independently. These are
+   two different tools that happen to share a price source: skilling is gold per
+   hour of activity, trading is gold per offer slot, and the calculator must not
+   stop working because a market panel hasn't been opened. */
+const PRICES_URL = "./data/market/latest.json";
+let skillPrices = null;
+const SKILL_TAX = 0.01;          // selling what you make pays the same 1%
+
+/** Task names are loc keys: "coal_ore" -> "Coal ore". spaceCase only splits
+    camelCase, so it left the underscore sitting in the middle of the word. */
+const taskName = raw => {
+  const t = String(raw || "").replace(/_/g, " ").trim();
+  return t ? t[0].toUpperCase() + t.slice(1) : "";
+};
+
+/* Upgrades that change the ECONOMICS of a task, not its speed. Ignoring these
+   made papaya and titanium bars read as losses when both are profitable — the
+   worst kind of wrong, because a member would believe it and stop.
+
+   Effects are quoted at max tier, as the game states them, and scaled linearly
+   by the tier a player actually holds (every one of these divides evenly: 20%
+   a tier for the doublers, 10% for the savers, 33% for plank bargain).
+
+   Coal is item 31; "not use up ORE" excludes it, and excludes the top two bar
+   tiers, exactly as the upgrade says. */
+const COAL_ID = 31;
+const MODS = {
+  Fishing:     { key:"theFisherman",          max:5, out:  +1.0,
+                 why:"The fisherman doubles your catch" },
+  Woodcutting: { key:"theLumberjack",         max:5, out:  +1.0,
+                 why:"The lumberjack doubles your logs" },
+  Foraging:    { key:"powerForager",          max:5, out:  +0.5,
+                 why:"Power forager, 50% chance to double" },
+  Farming:     { key:"farmingTrickery",       max:5, cost: -0.5,
+                 why:"Farming trickery saves half your seeds" },
+  Carpentry:   { key:"plankBargain",          max:3, cost: -1.0,
+                 why:"Plank bargain removes the material cost" },
+  Smithing:    { key:"smeltingMagic",         max:3, oreOnly: -0.3,
+                 why:"Smelting magic saves 30% of the ore" }
+};
+
+/** Tier held for an upgrade, from whichever profile we have. Default: maxed. */
+function modTier(m){
+  const ups = state.members && state.members.length
+    ? (state.members.find(x => x.profile && x.profile.upgrades) || {}).profile
+    : null;
+  const held = ups && ups.upgrades ? Number(ups.upgrades[m.key]) : NaN;
+  return Number.isFinite(held) ? Math.min(held, m.max) : m.max;
+}
+
+let taskDoc = null;
+let skillPick = "";
+/* 4.0x is 75% — tool, cape and enchanted jewellery, the shape of a geared
+   account. Gathering skills reach 5.0x with the clan's Gatherers bonus. */
+let skillSpeed = 4.0;
+
+async function loadTasks(){
+  try {
+    const res = await fetch(TASKS_URL, { cache:"no-store" });
+    if (!res.ok) return null;
+    const doc = await res.json();
+    return (doc && doc.tasks) ? doc : null;
+  } catch { return null; }
+}
+
+/** What one unit of an item is worth right now, from the market snapshot. */
+function itemValue(id){
+  const src = skillPrices && skillPrices.items ? skillPrices : null;
+  const r = src ? src.items[String(id)] : null;
+  if (!r) return null;
+  return Number(r.avg7) || Number(r.fair) || Number(r.avg1d) ||
+         (Number(r.bid) && Number(r.ask) ? Math.round((r.bid + r.ask) / 2) : null);
+}
+
+function planTask(t, skill){
+  const outVal = itemValue(t.out);
+  if (!outVal) return null;                    // can't price the product
+
+  const m = MODS[skill];
+  const frac = m ? modTier(m) / m.max : 0;     // how much of the effect is unlocked
+  // Astronomical and Otherworldly bars are excluded from smelting magic.
+  const smeltable = m && m.oreOnly && /_bar$/.test(t.name) &&
+                    !/^(astronomical|otherworldly)_/.test(t.name);
+
+  let cost = 0, unpriced = false;
+  for (const [id, qty] of (t.costs || [])){
+    const v = itemValue(id);
+    if (!v){ unpriced = true; break; }
+    let q = qty;
+    if (m && m.cost) q *= (1 + m.cost * frac);
+    if (smeltable && id !== COAL_ID) q *= (1 + m.oreOnly * frac);
+    cost += v * q;
+  }
+  if (unpriced) return null;                   // an unpriced input makes the rest fiction
+
+  const yieldMul = m && m.out ? 1 + m.out * frac : 1;
+  const revenue = t.n * yieldMul * outVal * (1 - SKILL_TAX);
+  const perAction = revenue - cost;
+  const instant = !t.ms;
+  const seconds = instant ? 0 : (t.ms / 1000) / skillSpeed;
+  const perHour = instant ? null : (3600 / seconds) * perAction;
+
+  return {
+    ...t, cost, revenue, perAction, seconds, instant,
+    modWhy: (m && frac > 0 && (m.out || m.cost || smeltable)) ? m.why : null,
+    perHour, perDay: perHour == null ? null : perHour * 24,
+    xpHour: instant || !t.xp ? null : (3600 / seconds) * t.xp
+  };
+}
+
+function renderSkills(){
+  const host = $("#skillTable"), hint = $("#skillHint");
+  if (!host) return;
+
+  if (!taskDoc){
+    hint.textContent = "No task data yet — the asset job writes data/tasks.json.";
+    host.innerHTML = ""; return;
+  }
+  if (!skillPrices){
+    hint.textContent = "No price snapshot yet — the hourly job writes data/market/latest.json.";
+    host.innerHTML = ""; return;
+  }
+
+  const names = Object.keys(taskDoc.tasks).sort();
+  if (!skillPick || !taskDoc.tasks[skillPick]) skillPick = names[0];
+
+  const sel = $("#skillPick");
+  if (sel && sel.options.length !== names.length){
+    sel.innerHTML = names.map(n =>
+      `<option value="${esc(n)}">${esc(spaceCase(n))}</option>`).join("");
+    sel.value = skillPick;
+  }
+
+  const rows = taskDoc.tasks[skillPick].map(t => planTask(t, skillPick)).filter(Boolean);
+  const priced = rows.length, total = taskDoc.tasks[skillPick].length;
+
+  // Instant tasks have no per-hour rate, so rank them separately by profit.
+  const timed   = rows.filter(r => !r.instant).sort((a, b) => b.perDay - a.perDay);
+  const instant = rows.filter(r =>  r.instant).sort((a, b) => b.perAction - a.perAction);
+
+  hint.innerHTML =
+    `${num(priced)} of ${num(total)} tasks priced · valued at the 7-day traded average, ` +
+    `after the 1% sell tax · ${skillSpeed.toFixed(2)}× speed` +
+    (rows.find(r => r.modWhy) ? ` · ${esc(rows.find(r => r.modWhy).modWhy)}` : "") +
+    (priced < total ? ` · ${num(total - priced)} skipped because an item has no market price` : "");
+
+  const money = v => `<span class="${v >= 0 ? "pos" : "neg"}">${v >= 0 ? "" : "−"}${gold(Math.abs(v))}</span>`;
+
+  host.innerHTML =
+    (timed.length ? `<thead><tr>
+        <th>Task</th><th>Lvl</th><th>Each</th><th>Materials</th>
+        <th>Profit each</th><th>Per hour</th><th>Per day</th><th>Xp/hr</th>
+      </tr></thead><tbody>${timed.map(r => `<tr>
+        <td>${esc(taskName(r.name))}</td>
+        <td>${num(r.lvl)}</td>
+        <td>${r.seconds.toFixed(1)}s</td>
+        <td>${r.cost ? gold(r.cost) : '<span class="dim">—</span>'}</td>
+        <td>${money(r.perAction)}</td>
+        <td>${money(r.perHour)}</td>
+        <td><strong>${money(r.perDay)}</strong></td>
+        <td class="dim">${r.xpHour ? abbr(r.xpHour) : "—"}</td>
+      </tr>`).join("")}</tbody>` : "") +
+    (instant.length ? `<tbody><tr><td colspan="8" class="dim"
+        style="padding-top:14px">Instant — no processing time, so profit is per craft, not per hour</td></tr>
+      ${instant.map(r => `<tr>
+        <td>${esc(taskName(r.name))}</td>
+        <td>${num(r.lvl)}</td>
+        <td class="dim">instant</td>
+        <td>${r.cost ? gold(r.cost) : '<span class="dim">—</span>'}</td>
+        <td><strong>${money(r.perAction)}</strong></td>
+        <td class="dim">—</td><td class="dim">—</td>
+        <td class="dim">${r.xp ? num(r.xp) : "—"}</td>
+      </tr>`).join("")}</tbody>` : "");
+
+  if (!timed.length && !instant.length){
+    host.innerHTML = `<tbody><tr><td class="empty" style="padding:12px 0">
+      Nothing in ${esc(spaceCase(skillPick))} can be priced from the market yet.</td></tr></tbody>`;
+  }
+}
+
+function initSkills(){
+  const sel = $("#skillPick");
+  if (!sel) return;
+  sel.onchange = () => { skillPick = sel.value; renderSkills(); };
+  const sp = $("#skillSpeed");
+  if (sp) sp.onchange = () => { skillSpeed = Number(sp.value) || 4; renderSkills(); };
+  Promise.all([
+    loadTasks(),
+    fetch(PRICES_URL, { cache:"no-store" }).then(r => r.ok ? r.json() : null).catch(() => null)
+  ]).then(([tasks, prices]) => {
+    taskDoc = tasks;
+    skillPrices = (prices && prices.items) ? prices : null;
+    renderSkills();
+  });
+}
+</script>
+<script>
+"use strict";
 initControls();
 initExtras();
 initMarket();
 initPicks();
+initSkills();
 initCreation();
 loadAll().then(prefetchWorldRanks);
 setInterval(loadAll, REFRESH_MS);
