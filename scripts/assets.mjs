@@ -30,6 +30,7 @@ const ROOT     = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT_JSON = resolve(ROOT, "data/item-stats.json");
 const ICON_DIR = resolve(ROOT, "data/icons");
 const OUT_UPGRADES = resolve(ROOT, "data/upgrades.json");
+const OUT_TASKS    = resolve(ROOT, "data/tasks.json");
 
 const API  = process.env.API_BASE  || "https://query.idleclans.com";
 const WIKI = process.env.WIKI_BASE || "https://idleclans.wiki";
@@ -758,6 +759,116 @@ async function fetchSkillIcons(){
   return got + already;
 }
 
+/* ------------------------------------------------------------------ */
+/* Skilling tasks                                                      */
+/* ------------------------------------------------------------------ */
+
+/* Everything a profit calculator needs is already in the payload: how long an
+   action takes, what it consumes, what it produces. It is only unreachable
+   from a browser because the whole document is megabytes — so we lift the few
+   fields that matter into a small file, the same way we did item stats.
+
+   Combat sits in the same Tasks section and is filtered out by looking for the
+   enemy fields rather than by naming skills, so a new combat skill doesn't
+   quietly appear in a list of things to smelt. */
+const COMBAT_MARKERS = ["enemyhealth", "enemyattackinterval", "isboss", "isclanboss"];
+
+function isCombatTask(t){
+  const m = new Map(Object.entries(t).map(([k, v]) => [k.toLowerCase(), v]));
+  if (m.get("isboss") === true || m.get("isclanboss") === true) return true;
+  for (const key of COMBAT_MARKERS){
+    const v = Number(m.get(key));
+    if (Number.isFinite(v) && v > 0) return true;
+  }
+  return false;
+}
+
+/** Costs arrive in a few shapes; normalise to [[itemId, amount], …]. */
+function readCosts(raw){
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const c of raw){
+    if (!c || typeof c !== "object") continue;
+    const m = new Map(Object.entries(c).map(([k, v]) => [k.toLowerCase(), v]));
+    const id  = Number(m.get("item") ?? m.get("itemid") ?? m.get("id"));
+    const amt = Number(m.get("amount") ?? m.get("count") ?? m.get("quantity") ?? 1);
+    if (Number.isFinite(id) && id > 0 && Number.isFinite(amt) && amt > 0) out.push([id, amt]);
+  }
+  return out;
+}
+
+async function extractTasks(game){
+  console.log("\nExtracting skilling tasks…");
+  if (!game || game.__rawText){
+    console.log("  !! game data did not parse; cannot read tasks this run.");
+    return null;
+  }
+  const tasksNode = game.Tasks || game.tasks;
+  if (!tasksNode || typeof tasksNode !== "object"){
+    console.log("  !! no top-level Tasks section.");
+    return null;
+  }
+
+  const skills = Object.keys(tasksNode);
+  console.log(`  Tasks has ${skills.length} sections: ${skills.join(", ")}`);
+
+  const out = {};
+  let kept = 0, combat = 0, noOutput = 0;
+
+  for (const [skill, listRaw] of Object.entries(tasksNode)){
+    const list = Array.isArray(listRaw) ? listRaw
+               : (listRaw && Array.isArray(listRaw.Items) ? listRaw.Items : null);
+    if (!list){ console.log(`  ${skill}: not a list, skipped`); continue; }
+
+    const rows = [];
+    for (const t of list){
+      if (!t || typeof t !== "object") continue;
+      const m = new Map(Object.entries(t).map(([k, v]) => [k.toLowerCase(), v]));
+      if (isCombatTask(t)){ combat++; continue; }
+      if (m.get("disabled") === true) continue;
+
+      const outId  = Number(m.get("itemreward"));
+      const outAmt = Number(m.get("itemamount"));
+      const base   = Number(m.get("basetime"));
+      if (!Number.isFinite(outId) || outId <= 0){ noOutput++; continue; }
+
+      rows.push({
+        name:  String(m.get("name") ?? ""),
+        lvl:   Number(m.get("levelrequirement")) || 0,
+        ms:    Number.isFinite(base) ? base : 0,
+        xp:    Number(m.get("expreward")) || 0,
+        out:   outId,
+        n:     Number.isFinite(outAmt) && outAmt > 0 ? outAmt : 1,
+        costs: readCosts(m.get("costs")),
+        hidden: m.get("hidden") === true ? 1 : undefined
+      });
+      kept++;
+    }
+    if (rows.length){
+      out[skill] = rows;
+      const withCost = rows.filter(r => r.costs.length).length;
+      const instant  = rows.filter(r => !r.ms).length;
+      console.log(`  ${skill}: ${rows.length} tasks · ${withCost} consume materials` +
+                  (instant ? ` · ${instant} take no time` : ""));
+    }
+  }
+
+  console.log(`  kept ${kept}, skipped ${combat} combat and ${noOutput} with no item output`);
+  const sample = Object.values(out)[0] && Object.values(out)[0][0];
+  if (sample) console.log("  sample:", JSON.stringify(sample));
+
+  await mkdir(dirname(OUT_TASKS), { recursive: true });
+  await writeFile(OUT_TASKS, JSON.stringify({
+    generatedAt: new Date().toISOString(),
+    skills: Object.keys(out).length,
+    taskCount: kept,
+    tasks: out
+  }) + "\n");
+  const kb = (JSON.stringify(out).length / 1024).toFixed(0);
+  console.log(`  wrote data/tasks.json — ${Object.keys(out).length} skills, ${kept} tasks, ~${kb}KB`);
+  return kept;
+}
+
 async function main(){
   const needGame = !process.env.SKIP_STATS || !process.env.SKIP_UPGRADES;
   let game = null;
@@ -769,12 +880,14 @@ async function main(){
 
   const stats = process.env.SKIP_STATS    ? null : await extractStats(game);
   const ups   = process.env.SKIP_UPGRADES ? null : await extractUpgrades(game);
+  const tasks = process.env.SKIP_TASKS    ? null : await extractTasks(game);
   const icons = process.env.SKIP_ICONS    ? null : await fetchIcons();
   const sicons = process.env.SKIP_ICONS   ? null : await fetchSkillIcons();
 
   console.log("\nDone.");
   if (stats != null) console.log(`  ${stats} items have combat bonuses`);
   if (ups   != null) console.log(`  ${ups} upgrades with a known maximum`);
+  if (tasks != null) console.log(`  ${tasks} skilling tasks`);
   if (icons != null) console.log(`  ${icons} item icons available`);
   if (sicons != null) console.log(`  ${sicons} of ${SKILL_ICONS.length} skill icons available`);
   console.log("  Commit data/ and the dashboard picks it all up.");
