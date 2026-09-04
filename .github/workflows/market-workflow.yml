@@ -1,0 +1,62 @@
+name: Hourly market snapshot
+
+# The market API only ever reports "right now". Recording it every hour is the
+# only way to know whether a buy order has stood for six hours or appeared a
+# minute ago — and that is the difference between a real exit and bait.
+# History has a start date: an hour not recorded cannot be recovered later.
+
+on:
+  schedule:
+    # Five past, because GitHub's scheduler is busiest exactly on the hour and
+    # jobs asking for :00 get queued behind everyone else's.
+    - cron: "5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Never let two snapshots run at once: they would both read the same hour and
+# race each other writing the history file.
+concurrency:
+  group: market-snapshot
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Capture the market
+        run: node scripts/market-snapshot.mjs
+
+      - name: Commit the snapshot
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Stage before checking: these files may be brand new, and `git diff`
+          # on the working tree is blind to untracked files.
+          git add -A data/market
+
+          if git diff --cached --quiet; then
+            echo "Nothing changed; not committing."
+            exit 0
+          fi
+
+          git commit -m "Market snapshot $(date -u +%Y-%m-%dT%H:00Z)"
+
+          # Another hour's run may have landed while this one was working.
+          # Rebase onto it rather than failing the job.
+          for attempt in 1 2 3; do
+            if git push; then exit 0; fi
+            echo "Push rejected, rebasing and retrying ($attempt)…"
+            git pull --rebase --autostash || true
+            sleep 5
+          done
+          echo "Could not push after 3 attempts."
+          exit 1
