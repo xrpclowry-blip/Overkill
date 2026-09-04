@@ -1,9 +1,11 @@
 /* =====================================================================
    Clan log archive
    ---------------------------------------------------------------------
-   The game's clan log is a rolling window. Measured on 2026-09-04 it held
-   616 entries reaching back to 2026-08-19 — sixteen days. skip=800 is a
-   404, so that really is the whole of it.
+   The game's clan log is a rolling window. The first archive run, on
+   2026-09-04, read 639 entries reaching back to 2026-08-22 — thirteen days.
+   skip=800 is a 404, so that really is the whole of it. The bound is the
+   entry count rather than the age, so a busy fortnight covers fewer days
+   than a quiet one.
 
    Everything the dashboard says about the vault is derived from that log:
    who deposited what, who withdrew it, what it was worth. So every day
