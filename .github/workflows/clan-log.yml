@@ -1,8 +1,9 @@
 name: Clan log archive
 
-# The game's clan log is a rolling window of roughly 600 entries — about
-# sixteen days. Vault deposits older than that are gone from the API, which is
-# why members' vault totals were silently shrinking. This job keeps them.
+# The game's clan log is a rolling window of roughly 600 entries — a fortnight
+# or so, depending on how busy the clan is. Vault deposits older than that are
+# gone from the API, which is why members' vault totals were silently
+# shrinking. This job keeps them.
 #
 # Every four hours is well inside the window, so even a couple of failed runs
 # in a row loses nothing.
