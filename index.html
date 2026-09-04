@@ -842,7 +842,11 @@ function ago(hours){
 }
 function dateShort(iso){
   if (!iso) return "—";
-  const d = new Date(iso);
+  // "2026-09-02" is parsed as UTC midnight, so anyone west of Greenwich sees
+  // the day before. A date with no time is a calendar day, not an instant —
+  // read it as local so a snapshot labelled Sep 2 doesn't display as Sep 1.
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso).trim());
+  const d = m ? new Date(+m[1], +m[2] - 1, +m[3]) : new Date(iso);
   return isNaN(d) ? "—" : d.toLocaleDateString(undefined,{month:"short",day:"numeric",year:"2-digit"});
 }
 function daysSince(iso){
