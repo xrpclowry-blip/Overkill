@@ -783,6 +783,37 @@ function isCombatTask(t){
   return false;
 }
 
+/* This payload wraps its collections, and not consistently:
+     Items    -> { Items: [ … ] }
+     Upgrades -> { Id, Items: [ … ] }
+     Tasks.X  -> [ { _id, Items: [ … ] } ]      <- an ARRAY holding the wrapper
+   Rather than special-case a fourth variant next time, find the largest array
+   whose members actually look like what we're after, wherever it is buried. */
+function deepestList(node, looksRight, depth = 0){
+  if (!node || typeof node !== "object" || depth > 6) return null;
+  let best = null;
+  const consider = arr => {
+    const n = arr.filter(looksRight).length;
+    if (n && (!best || n > best.n)) best = { list: arr, n };
+  };
+  if (Array.isArray(node)){
+    consider(node);
+    for (const v of node.slice(0, 50)){
+      const inner = deepestList(v, looksRight, depth + 1);
+      if (inner && (!best || inner.n > best.n)) best = inner;
+    }
+    return best;
+  }
+  for (const v of Object.values(node)){
+    const inner = deepestList(v, looksRight, depth + 1);
+    if (inner && (!best || inner.n > best.n)) best = inner;
+  }
+  return best;
+}
+
+const looksLikeTask = v => v && typeof v === "object" && !Array.isArray(v) &&
+  Object.keys(v).some(k => /^(basetime|itemreward|taskid|expreward)$/i.test(k.replace(/\s+/g, "")));
+
 /** Costs arrive in a few shapes; normalise to [[itemId, amount], …]. */
 function readCosts(raw){
   if (!Array.isArray(raw)) return [];
@@ -816,9 +847,9 @@ async function extractTasks(game){
   let kept = 0, combat = 0, noOutput = 0;
 
   for (const [skill, listRaw] of Object.entries(tasksNode)){
-    const list = Array.isArray(listRaw) ? listRaw
-               : (listRaw && Array.isArray(listRaw.Items) ? listRaw.Items : null);
-    if (!list){ console.log(`  ${skill}: not a list, skipped`); continue; }
+    const found = deepestList(listRaw, looksLikeTask);
+    const list = found && found.list;
+    if (!list){ console.log(`  ${skill}: no task-shaped list found, skipped`); continue; }
 
     const rows = [];
     for (const t of list){
