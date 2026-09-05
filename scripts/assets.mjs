@@ -367,6 +367,85 @@ async function extractStats(game){
   }
   if (!shown.size) console.log("  probe matched no items — name patterns need adjusting");
 
+  /* ---- where is ritual power stored? -------------------------------------
+     Guessing field names has a poor record here, so search by VALUE instead.
+     These figures are read off the in-game item cards, so whichever field
+     holds them is the one the RP finder needs. If a field name comes back
+     consistently across all four, that is the answer; if nothing matches, RP
+     is computed by the client and isn't in this file at all. */
+  const RP_KNOWN = {
+    otherworldly_fishing_rod: 390888,
+    godlike_fishing_rod:      139162,
+    refined_fishing_rod:      1263,
+    potion_of_forgery:        499
+  };
+  const rpHits = [];
+  for (const raw of items){
+    const m = lower(raw);
+    const nm = norm(String(m.get("name") || m.get("namelockey") || "")).replace(/ /g, "_");
+    const want = RP_KNOWN[nm];
+    if (want == null) continue;
+    const matches = [...m].filter(([, v]) => Number(v) === want).map(([k]) => k);
+    rpHits.push(`${nm}: ${matches.length ? matches.join(", ") : "NO FIELD HOLDS " + want}`);
+    /* Print every number on one of them, so a near-miss is still visible. */
+    if (nm === "potion_of_forgery"){
+      const nums = [...m].filter(([, v]) => typeof v === "number" && v !== 0)
+                         .map(([k, v]) => `${k}=${v}`);
+      console.log(`  every number on potion_of_forgery: ${nums.join(", ")}`);
+    }
+  }
+  console.log("  ritual-power field search (by known value):");
+  for (const line of rpHits) console.log(`    ${line}`);
+  if (!rpHits.length) console.log("    none of the four probe items were found by name");
+
+  /* ---- diagnostic: what would an achievement board group together? --------
+     Gear follows three different naming schemes — the tool ladder (refined,
+     great, elite...), the smithing ladder (metals), and one-off uniques. The
+     proposed rule is "family = the item name with its leading word dropped,
+     ordered within the family by level requirement". Print what that actually
+     produces for equippable items so the grouping can be judged before any
+     board is built on it. Families of one are almost certainly uniques. */
+  const fam = new Map();
+  for (const item of list){
+    const slot = slotOf(item);
+    if (slot == null || String(slot).toLowerCase() === "none" || String(slot) === "-1") continue;
+    const nm = String(item.name ?? item.Name ?? "");
+    if (!nm) continue;
+    const parts = norm(nm).split(" ");
+    const key = parts.length > 1 ? parts.slice(1).join(" ") : parts[0];
+    if (!fam.has(key)) fam.set(key, []);
+    fam.get(key).push({
+      nm,
+      lvl:  Number(item.levelRequirement ?? item.levelrequirement ?? 0) || 0,
+      skill: item.associatedSkill ?? item.associatedskill ?? null,
+      slot
+    });
+  }
+  const groups = [...fam].sort((a, b) => b[1].length - a[1].length);
+  const many = groups.filter(([, v]) => v.length > 1);
+  console.log(`  achievement grouping: ${groups.length} families from ${
+    groups.reduce((n, [, v]) => n + v.length, 0)} equippable items ` +
+    `(${many.length} with more than one tier, ${groups.length - many.length} singletons)`);
+  for (const [key, v] of many.slice(0, 12)){
+    const ordered = v.sort((a, b) => a.lvl - b.lvl).map(x => `${x.nm}(${x.lvl})`);
+    const skills = [...new Set(v.map(x => x.skill).filter(x => x != null))];
+    const slots  = [...new Set(v.map(x => x.slot))];
+    console.log(`    ${key} [skill ${skills.join("/") || "-"}, slot ${slots.join("/")}]: ${ordered.join(" < ")}`);
+  }
+
+  /* If associatedSkill + equipmentSlot already partition gear sensibly, that is
+     a far better family key than anything derived from the name. */
+  const bySlotSkill = new Map();
+  for (const [, v] of fam) for (const it of v){
+    const k = `slot ${it.slot} / skill ${it.skill ?? "-"}`;
+    bySlotSkill.set(k, (bySlotSkill.get(k) || 0) + 1);
+  }
+  console.log(`  by slot+skill instead: ${bySlotSkill.size} groups; largest —`);
+  for (const [k, n] of [...bySlotSkill].sort((a, b) => b[1] - a[1]).slice(0, 8))
+    console.log(`    ${k}: ${n} items`);
+  console.log("    singleton examples: " +
+    groups.filter(([, v]) => v.length === 1).slice(0, 12).map(([k]) => k).join(", "));
+
   return withStats;
 }
 
@@ -618,6 +697,19 @@ function pick(map, names){
   return undefined;
 }
 
+/* The bulk-purchasable upgrades are formula-driven: their entry says Tiers 0
+   and Costs [5000], while the game itself shows 93/190 and a tier-190 price of
+   10,418,180 gold. The ceiling is simply not in the file.
+
+   These come from the wiki instead, and are tagged source:"wiki" in the output
+   so nobody mistakes them for game data. Add to this only from a page you have
+   actually read — a guessed ceiling is worse than none, because a denominator
+   looks authoritative.
+     https://idleclans.wiki/w/Keep_it_spacious — max tier 190 */
+const WIKI_CEILINGS = {
+  keepItSpacious: 190
+};
+
 async function extractUpgrades(game){
   console.log("\nExtracting upgrade definitions…");
   if (!game || game.__rawText){
@@ -684,111 +776,120 @@ async function extractUpgrades(game){
     if (isObj(v)) console.log(`  ENTRY ${i}: ${preview(v).slice(0, 900)}`);
   });
 
-  const out = {};
-  let withMax = 0, noMax = 0, flavourOnly = 0;
-  const flavourSamples = [];
-  const unresolved = [];
+  /* Identity was the whole problem here, and it turned out not to exist.
+     `Type` is a numeric enum, not a name, so every attempt to read a name off
+     these entries failed and 47 of 48 upgrades were thrown away.
 
-  /* Loc keys arrive per tier: "keep_it_spacious_tier_1" names one tier, not the
-     upgrade. Strip the tier suffix so the whole thing reads as one upgrade. */
-  /* Tier loc keys come in two flavours:
-       "toolbelt_upgrade_tier_1_name"  -> the upgrade's own name, decorated
-       "cardboard_box"                 -> flavour text for that tier only
-     Strip the decoration; the second kind is unusable as identity and is
-     reported rather than trusted. */
-  const stripTier = t => String(t)
-    .replace(/[_\s-]*(name|title|label)$/i, "")
-    .replace(/[_\s-]*tier[_\s-]*\d+$/i, "")
-    .replace(/[_\s-]\d+$/, "");
-  const decorated = t => /[_\s-]*tier[_\s-]*\d+([_\s-]*(name|title|label))?$/i.test(String(t));
+     The player profile lists its upgrades in that same enum order — verified
+     three deep: index 0 is housing and the game's Type 0 is the one whose
+     tiers are cardboard_box / tent / van_down_by_the_river; index 1 is
+     keepItSpacious and Type 1 is the bulk-purchasable one with no tier count;
+     index 2 is theLumberjack and Type 2 has five tiers.
 
-  const longest = (...arrays) => arrays.reduce(
-    (n, a) => Array.isArray(a) && a.length > n ? a.length : n, 0);
+     So the index IS the identity. Write the ceilings positionally and let the
+     dashboard line them up against the profile's own key order. No names, no
+     loc keys, nothing to guess. */
+  const tiers = [], bulk = [], flags = [];
+  for (const [, val] of entries){
+    if (!isObj(val)){ tiers.push(null); bulk.push(false); flags.push(null); continue; }
+    const m = new Map(Object.entries(val).map(([k, v]) => [k.toLowerCase(), v]));
 
-  for (const [key, val] of entries){
-    let name = key, max = null, disc = false, clan = false, desc = null;
-
-    if (val && typeof val === "object" && !Array.isArray(val)){
-      const m = new Map(Object.entries(val).map(([k, v]) => [k.toLowerCase(), v]));
-
-      // Identity: Type is the join key the player profile uses.
-      const type = m.get("type");
-      const locs = m.get("tiernamelockeys");
-      if (typeof type === "string" && type.trim()) name = type;
-      // Only trust a tier loc key when it's decorated with a tier marker —
-      // otherwise it's this tier's flavour name ("Cardboard box" is Housing
-      // tier 1), which would file the upgrade under the wrong identity.
-      else if (Array.isArray(locs) && typeof locs[0] === "string" && decorated(locs[0]))
-        name = stripTier(locs[0]);
-      else if (Array.isArray(locs) && typeof locs[0] === "string"){
-        flavourOnly++;
-        if (flavourSamples.length < 6) flavourSamples.push(locs[0]);
-      }
-      else if (Number.isFinite(Number(type)) && Array.isArray(locs) && typeof locs[0] === "string")
-        name = stripTier(locs[0]);
-      else if (key) name = key;
-
-      // Ceiling: an explicit count, else however many tiers are described.
-      const tiers = m.get("tiers");
-      if (!Array.isArray(tiers) && Number.isFinite(Number(tiers)) && Number(tiers) > 0){
-        max = Number(tiers);
-      } else {
-        const n = longest(tiers, m.get("costs"), m.get("tiernamelockeys"),
-                          m.get("tierunlocks"), m.get("tierdescriptionlockeys"), m.get("itemcosts"));
-        if (n > 0) max = n;
-      }
-
-      disc = m.get("discontinued") === true;
-      clan = m.get("isclanupgrade") === true;
-
-      const dl = m.get("tierdescriptionlockeys");
-      if (Array.isArray(dl) && typeof dl[0] === "string" && /\s/.test(dl[0])) desc = dl[0];
-      const cat = pick(m, CAT_FIELDS);
-      if (typeof cat === "string" && cat) desc = desc || null;
-    } else if (Number.isFinite(Number(val))){
-      max = Number(val);
-    } else if (Array.isArray(val)){
-      max = val.length;
-    }
-
-    const id = upgradeKey(name || key);
-    if (!id) continue;
-    out[id] = { name: upgradeTitle(name || key) };
-    if (max != null && max > 0){ out[id].max = max; withMax++; }
-    else { noMax++; if (unresolved.length < 12) unresolved.push(String(name || key)); }
-    if (disc) out[id].disc = true;
-    if (clan) out[id].clan = true;
-    if (desc) out[id].desc = desc;
+    const t = Number(m.get("tiers"));
+    /* Tiers 0 does NOT mean unbounded. Keep It Spacious reads 93/190 in game
+       while its entry here says 0 — the bulk-purchasable upgrades simply do
+       not enumerate their ceiling in this file, and 190 comes from somewhere
+       we have not found. So 0 means UNKNOWN, and the panel must show no
+       denominator rather than invent one. */
+    tiers.push(Number.isFinite(t) ? t : null);
+    bulk.push(m.get("canpurchaseinbulk") === true);
+    flags.push({
+      clan: m.get("isclanupgrade") === true,
+      discontinued: m.get("discontinued") === true
+    });
   }
 
-  console.log(`  ${withMax} with a max level, ${noMax} without`);
-  if (flavourOnly) console.log(`  ${flavourOnly} had only per-tier flavour names, no usable identity: ${
-    flavourSamples.join(", ")}`);
-  if (unresolved.length) console.log("  no max found for:", unresolved.join(", "));
-  const sample = Object.entries(out).slice(0, 6)
-    .map(([k, v]) => `${k}${v.max ? "/" + v.max : " (no max)"}`).join(", ");
-  console.log("  sample of what was written:", sample);
-  const vals = Object.values(out);
-  console.log(`  ${vals.filter(v => v.disc).length} discontinued, ${
-    vals.filter(v => v.clan).length} are clan upgrades`);
-  const first = entries.find(([, v]) => isObj(v));
-  if (first){
-    const v = first[1];
-    console.log("  sample entry values: Type=" + JSON.stringify(v.Type) +
-      " Tiers=" + JSON.stringify(Array.isArray(v.Tiers) ? `[${v.Tiers.length}]` : v.Tiers) +
-      " Costs=" + (Array.isArray(v.Costs) ? `[${v.Costs.length}]` : JSON.stringify(v.Costs)) +
-      " TierNameLocKeys[0]=" + JSON.stringify(Array.isArray(v.TierNameLocKeys) ? v.TierNameLocKeys[0] : undefined));
+  const capped     = tiers.filter(t => t > 0).length;
+  const bulkNoMax = tiers.filter((t, i) => t === 0 && bulk[i]).length;
+  console.log(`  ${tiers.length} entries: ${capped} state a tier ceiling, ` +
+              `${bulkNoMax} are bulk-purchasable with no ceiling in the data ` +
+              `(Keep It Spacious is really 190), ${tiers.length - capped - bulkNoMax} neither`);
+
+  /* Turn positions into names, and refuse to guess if it doesn't add up.
+
+     A live player profile lists its upgrades in the same enum order, so zipping
+     the two gives a real name for every ceiling. But an off-by-one would
+     mislabel everything after the gap, so the alignment has to earn trust:
+     the counts must match exactly, and nobody's held tier may exceed the
+     ceiling it lands on. Twenty members' worth of held levels is a strong
+     check — a shifted array would almost certainly put someone's tier 5 on top
+     of a three-tier upgrade. If either test fails we write nothing and say so,
+     because no ceilings is a great deal better than wrong ones. */
+  let named = null, why = null;
+  try {
+    const members = (await get(`/api/Clan/${encodeURIComponent(CLAN)}`))?.memberlist || [];
+    const names = members.map(m => m.memberName ?? m.MemberName ?? m).filter(Boolean);
+    const profiles = [];
+    for (const n of names.slice(0, 20)){
+      try {
+        const prof = await get(`/api/Player/profile/${encodeURIComponent(n)}`);
+        if (prof && prof.upgrades && Object.keys(prof.upgrades).length) profiles.push([n, prof.upgrades]);
+      } catch { /* one bad profile shouldn't sink the run */ }
+    }
+    if (!profiles.length) throw new Error("no member profile returned upgrades");
+
+    const keys = Object.keys(profiles[0][1]);
+    if (keys.length !== tiers.length)
+      throw new Error(`profile lists ${keys.length} upgrades, game data has ${tiers.length} — cannot line them up`);
+
+    for (const [who, ups] of profiles){
+      const ks = Object.keys(ups);
+      if (ks.length !== keys.length) throw new Error(`${who} lists ${ks.length} upgrades, not ${keys.length}`);
+      ks.forEach((k, i) => {
+        const max = tiers[i], held = Number(ups[k]) || 0;
+        if (max > 0 && held > max)
+          throw new Error(`${who} holds ${k}=${held} but position ${i} allows ${max} — the alignment is wrong`);
+      });
+    }
+
+    named = {};
+    keys.forEach((k, i) => {
+      const wiki = WIKI_CEILINGS[k];
+      named[k] = {
+        max: tiers[i] > 0 ? tiers[i] : (wiki ?? tiers[i]),
+        bulk: bulk[i],
+        clan: flags[i] && flags[i].clan,
+        source: tiers[i] > 0 ? "game" : (wiki ? "wiki" : null)
+      };
+    });
+    const fromWiki = Object.values(named).filter(v => v.source === "wiki").length;
+    const stillBlank = Object.entries(named).filter(([, v]) => !v.max);
+    if (fromWiki) console.log(`  ${fromWiki} ceiling(s) filled in from the wiki`);
+    if (stillBlank.length)
+      console.log(`  ${stillBlank.length} still have no ceiling: ${
+        stillBlank.slice(0, 12).map(([k]) => k).join(", ")}`);
+    console.log(`  aligned against ${profiles.length} live profile(s); no member exceeds their ceiling`);
+  } catch (e){
+    why = e.message;
+    console.log(`  !! not writing named ceilings: ${why}`);
   }
 
   await mkdir(dirname(OUT_UPGRADES), { recursive: true });
   await writeFile(OUT_UPGRADES, JSON.stringify({
     generatedAt: new Date().toISOString(),
-    source: where,
-    count: Object.keys(out).length,
-    upgrades: out
+    note: "Positional by the game's Type enum; `upgrades` is that lined up " +
+          "against a live profile's key order. max 0 means the data does not " +
+          "state a ceiling, NOT that there isn't one — Keep It Spacious reads " +
+          "93/190 in game but records Tiers 0 here.",
+    count: tiers.length,
+    tiers, bulk,
+    upgrades: named,
+    alignmentError: why
   }) + "\n");
-  console.log(`  wrote data/upgrades.json — ${Object.keys(out).length} upgrades`);
-  return withMax;
+
+  console.log(named
+    ? `  wrote data/upgrades.json — ${Object.keys(named).length} named ceilings`
+    : `  wrote data/upgrades.json — positions only, no names`);
+  return tiers.length;
 }
 
 /* ------------------------------------------------------------------ */
