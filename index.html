@@ -135,6 +135,11 @@ tbody td:first-child{color:var(--text-primary);font-weight:500}
 .pill.deputy{background:#3987e522;color:#79b3f2;border-color:#3987e555}
 .pill.on{background:#199e7022;color:#3fc294;border-color:#199e7055}
 .pill.wrank{font-variant-numeric:tabular-nums}
+.stand{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px}
+.stand .row{display:flex;align-items:center;gap:8px;background:var(--surface-2);
+  border:1px solid var(--border-soft);border-radius:8px;padding:8px 10px;font-size:12.5px}
+.stand .row .nm{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.stand .row .sc{color:var(--text-muted);font-variant-numeric:tabular-nums;font-size:11.5px}
 /* World-rank tiers. Red is the TOP tier here, not a warning — the same
    language the skill bars use, where red marks a capped skill. */
 .pill.wrank.t100 {background:#e6676722;color:#f08a8a;border-color:#e6676755}
@@ -618,10 +623,19 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
   <!-- RANKINGS -->
   <section class="view" id="view-ranks" hidden>
     <div class="tiles" id="rankTiles"></div>
+
+    <div class="panel" id="standingsPanel" style="margin-bottom:14px" hidden>
+      <h2>Clan standings</h2>
+      <p class="hint" id="standingsHint"></p>
+      <div id="standingsSkills"></div>
+      <h2 style="margin-top:18px">Bosses</h2>
+      <div id="standingsBosses"></div>
+    </div>
+
     <div class="banner warn" style="margin:0 0 16px">
-      <div>These rankings measure <strong>experience earned in a rolling window</strong> — they move hour to hour
-      and are not the clan rank the game shows you. The public API doesn't expose that one, and each board
-      only lists its top slice, so clans below the cut show as unranked rather than at a real position.</div>
+      <div>The boards below measure <strong>experience earned in a rolling window</strong>, so they move hour to
+      hour — useful for seeing who's active now, but not the same thing as the standings above. Each one lists
+      only its top slice, so clans below the cut show as unranked rather than at a real position.</div>
     </div>
     <div class="panel">
       <h2>Clan rank by skill</h2>
@@ -1073,6 +1087,7 @@ const state = {
   clan:null, members:[], byName:new Map(),
   xp:{ 24:null, 168:null },
   timeline:[], logs:[], logArchive:null,
+  standings:undefined,      // undefined = not asked yet, null = asked and unavailable
   itemNames:null,           // id -> {name, key}, from the committed asset map
   items:new Map(),          // lowercase name -> {id,name,baseValue,tradeable}
   prices:new Map(),         // itemId -> price
@@ -2558,7 +2573,8 @@ async function loadExtras(){
     api(`/api/ClanCup/standings/${encodeURIComponent(CLAN)}?gameMode=${CUP_GAMEMODE}`, { optional:true }),
     api(`/api/Clan/experience/top?hours=168&limit=${BOARD_LIMIT}`, { optional:true }),
     loadHistory(),
-    api(`/api/Milestone/recent?count=200`, { optional:true })
+    api(`/api/Milestone/recent?count=200`, { optional:true }),
+    loadStandings()          // not destructured; it parks itself on state
   ]);
   mergeMilestones(milestones);
 
@@ -2741,6 +2757,74 @@ function cupTable(sel, rows, kind){
 /* --------------------------------------------------------------------- */
 /* Render — Rankings & rivals                                             */
 /* --------------------------------------------------------------------- */
+/* =====================================================================
+   Clan standings — the rank the game actually shows you
+   ---------------------------------------------------------------------
+   This panel used to carry an apology saying the public API didn't expose
+   a lifetime clan rank. It does: the same leaderboard endpoint that gives
+   a player their world rank takes "clans:" instead of "players:".
+
+     /api/Leaderboard/profile/clans:default/Overkill
+
+   It returns the whole Clan standings screen — total level and its rank,
+   then 40 fields: 21 skills and 15 bosses, each {score, rank}. The
+   experience/top boards are a different thing entirely and saturate around
+   thirty days, which is why they read 428M against a real 2.7 billion.
+   ===================================================================== */
+const BOSS_KEYS = new Set(["chimera","devil","griffin","hades","medusa","zeus","sobek",
+  "kronos","reckoning_of_the_gods","guardians_of_the_citadel","malignant_spider",
+  "skeleton_warrior","otherworldly_golem","bloodmoon_massacre","mesines"]);
+
+async function loadStandings(){
+  if (state.standings !== undefined) return state.standings;
+  state.standings = null;
+  const mode = (state.clan && state.clan.gameMode) || "default";
+  try {
+    state.standings = await api(
+      `/api/Leaderboard/profile/clans:${encodeURIComponent(mode)}/${encodeURIComponent(CLAN)}`,
+      { optional:true });
+  } catch { /* leave it null; the panel stays hidden */ }
+  return state.standings;
+}
+
+const standRow = (label, icon, r) => `
+  <div class="row">${icon || ""}<span class="nm">${esc(label)}</span>
+    ${r && r.rank ? rankBadge(r.rank) : '<span class="dim">—</span>'}
+    <span class="sc">${r && r.score ? abbr(r.score) : ""}</span></div>`;
+
+function renderStandings(){
+  const panel = $("#standingsPanel");
+  if (!panel) return;
+  const doc = state.standings;
+  if (!doc || !doc.fields){ panel.hidden = true; return; }
+  panel.hidden = false;
+
+  const tl = doc.totalLevelResult || {};
+  const lvl = tl.level ?? tl.totalLevel ?? tl.value;
+  $("#standingsHint").innerHTML =
+    `Where Overkill sits among all clans, lifetime — the same numbers the game's ` +
+    `Clan standings screen shows.` +
+    (tl.rank ? ` Total level <strong>${num(lvl)}</strong> ranks <strong>#${num(tl.rank)}</strong>` +
+               `${tl.score ? ` on ${abbr(tl.score)} experience` : ""}.` : "");
+
+  const byKey = new Map(SKILLS.map(sk => [sk.key, sk]));
+  const skills = [], bosses = [];
+  for (const [key, r] of Object.entries(doc.fields)){
+    (BOSS_KEYS.has(key) ? bosses : skills).push([key, r]);
+  }
+  const rank = ([, r]) => r && r.rank ? r.rank : 9e9;
+  skills.sort((a, b) => rank(a) - rank(b));
+  bosses.sort((a, b) => rank(a) - rank(b));
+
+  $("#standingsSkills").innerHTML = `<div class="stand">${skills.map(([k, r]) => {
+    const sk = byKey.get(k);
+    return standRow(sk ? sk.label : spaceCase(k), skillIcon(k), r);
+  }).join("")}</div>`;
+
+  $("#standingsBosses").innerHTML = `<div class="stand">${bosses.map(([k, r]) =>
+    standRow(taskName(k), "", r)).join("")}</div>`;
+}
+
 function renderRanks(){
   const board = state.board;
   const mine = board && state.worldRank ? board[state.worldRank - 1] : null;
@@ -2748,9 +2832,13 @@ function renderRanks(){
   const gap = (mine && leader) ? leader.totalExperience - mine.totalExperience : 0;
   const ahead = (board && state.worldRank > 1) ? board[state.worldRank - 2] : null;
 
+  /* Lead with the standing that doesn't move hour to hour. */
+  const tl = (state.standings && state.standings.totalLevelResult) || null;
   $("#rankTiles").innerHTML = [
+    tile("Clan rank", tl && tl.rank ? "#" + num(tl.rank) : "—",
+         tl ? `total level ${num(tl.level ?? tl.totalLevel ?? tl.value)} · lifetime` : "loading…"),
     tile("Weekly xp rank", state.worldRank ? "#" + state.worldRank : "unranked",
-         board ? `of ${board.length} clans listed · not your in-game clan rank` : ""),
+         board ? `of ${board.length} clans listed · a rolling window` : ""),
     tile("Clan xp · 7 days", mine ? abbr(mine.totalExperience) : "—",
          leader ? `leader ${esc(leader.clanName)} at ${abbr(leader.totalExperience)}` : ""),
     tile("Gap to first", gap ? abbr(gap) : "—", gap && mine ? `${(leader.totalExperience/mine.totalExperience).toFixed(1)}× our weekly total` : ""),
@@ -2784,6 +2872,7 @@ function renderRanks(){
   }
 
   renderRivals();
+  renderStandings();
 }
 
 function renderRivals(){
