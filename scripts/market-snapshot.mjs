@@ -109,6 +109,17 @@ async function main(){
     const dailyVols = s && Array.isArray(s.volumes) ? s.volumes.map(Number) : [];
 
     const row = { bid, ask };
+
+    /* How many units are stacked at each of those quotes. The live endpoint is
+       the only place this exists — the game keeps no history of its own order
+       book — so an hour not recorded is an hour gone. It is what separates a
+       bid nobody is trading against from a wall deep enough to absorb trades
+       without the price ever moving. */
+    const bq = Number(p.highestPriceVolume);
+    const aq = Number(p.lowestPriceVolume);
+    if (Number.isFinite(bq) && bq > 0) row.bidQty = bq;
+    if (Number.isFinite(aq) && aq > 0) row.askQty = aq;
+
     const avg24 = Number(p.dailyAveragePrice) || 0;
     if (avg24) row.avg1d = avg24;
     if (dailyAvgs.length){
@@ -167,7 +178,7 @@ async function main(){
     console.log("  this hour is already recorded; refreshing it in place");
     hist.hours.pop();
     for (const rec of Object.values(hist.items)){
-      for (const key of ["a", "b"]){
+      for (const key of ["a", "b", "aq", "bq"]){
         const arr = rec[key];
         if (Array.isArray(arr) && arr.length && arr[arr.length - 1][0] === hist.hours.length) arr.pop();
       }
@@ -176,24 +187,35 @@ async function main(){
   const h = hist.hours.length;
   hist.hours.push(hourKey);
 
+  /* Depth moves every time anyone adds or cancels an offer, so storing it raw
+     would turn a change-point file into a sample-every-hour file. Two
+     significant figures is plenty to tell 40 from 900, and it keeps a quiet
+     item quiet. */
+  const coarse = n => {
+    if (!Number.isFinite(n) || n <= 0) return null;
+    const mag = Math.pow(10, Math.max(0, Math.floor(Math.log10(n)) - 1));
+    return Math.round(n / mag) * mag;
+  };
+
   let changed = 0;
   for (const [idStr, row] of Object.entries(rows)){
     const rec = hist.items[idStr] || (hist.items[idStr] = { a: [], b: [] });
-    for (const [key, value] of [["a", row.ask], ["b", row.bid]]){
-      const arr = rec[key];
+    for (const [key, value] of [["a", row.ask], ["b", row.bid],
+                                ["aq", coarse(row.askQty)], ["bq", coarse(row.bidQty)]]){
+      const arr = rec[key] || (rec[key] = []);
       const prev = arr.length ? arr[arr.length - 1][1] : null;
       // Only write when it moves. A quiet item costs one entry a fortnight.
       if (prev !== value){ arr.push([h, value]); changed++; }
     }
   }
-  console.log(`  ${changed} price changes recorded this hour`);
+  console.log(`  ${changed} quote changes recorded this hour (price and depth)`);
 
   /* Drop hours that have aged out, and rebase the indices so they stay small. */
   if (hist.hours.length > KEEP_HOURS){
     const drop = hist.hours.length - KEEP_HOURS;
     hist.hours = hist.hours.slice(drop);
     for (const [idStr, rec] of Object.entries(hist.items)){
-      for (const key of ["a", "b"]){
+      for (const key of ["a", "b", "aq", "bq"]){
         const arr = rec[key] || [];
         // Keep the last value from before the cut: it's still in force.
         const before = arr.filter(([hr]) => hr < drop).pop();
@@ -201,7 +223,8 @@ async function main(){
         rec[key] = before && (!after.length || after[0][0] !== 0)
           ? [[0, before[1]], ...after] : after;
       }
-      if (!rec.a.length && !rec.b.length) delete hist.items[idStr];
+      if (!rec.a.length && !rec.b.length && !rec.aq.length && !rec.bq.length)
+        delete hist.items[idStr];
     }
     console.log(`  pruned ${drop} hour(s) past the ${KEEP_HOURS}-hour window`);
   }
@@ -226,6 +249,21 @@ async function main(){
     return arr.filter(([hr]) => hr >= from).length;
   };
 
+  /* The value in force at a given hour — change points record when something
+     moved, so the value at hour N is the last one written at or before N. */
+  const valueAt = (arr, hr) => {
+    if (!Array.isArray(arr) || !arr.length || hr < 0) return null;
+    let v = null;
+    for (const [h0, val] of arr){ if (h0 > hr) break; v = val; }
+    return v;
+  };
+  const midOf = (bid, ask) => (bid && ask) ? (bid + ask) / 2 : (bid || ask || null);
+
+  /* A day ago, in this file's own hour indices. The browser never downloads the
+     history, so the comparison is made here and only the answer is shipped.
+     Below 25 hours of history there is no honest answer, so none is written. */
+  const dayAgo = (HOURS - 1) - 24;
+
   let withAge = 0;
   for (const [idStr, row] of Object.entries(rows)){
     const rec = hist.items[idStr];
@@ -235,8 +273,21 @@ async function main(){
     if (askAge != null) row.askHeldH = askAge;
     const moves = movesIn(rec.a, 24) + movesIn(rec.b, 24);
     if (moves) row.moves24 = moves;
+
+    if (dayAgo >= 0){
+      const then = midOf(valueAt(rec.b, dayAgo), valueAt(rec.a, dayAgo));
+      const now  = midOf(row.bid, row.ask);
+      if (then && now){
+        row.mid24hAgo = Math.round(then);
+        row.chg24h = Math.round(((now - then) / then) * 1000) / 10;   // one decimal
+      }
+    }
   }
   console.log(`  ${withAge} items carry a quote age (needs 2+ snapshots to mean anything)`);
+  const moved = Object.values(rows).filter(r => r.chg24h != null).length;
+  console.log(dayAgo >= 0
+    ? `  ${moved} items carry a 24h price change`
+    : `  no 24h change yet — ${HOURS} hour(s) of history, 25 needed`);
 
   await writeFile(LATEST, JSON.stringify({
     capturedAt: stamp.toISOString(),
