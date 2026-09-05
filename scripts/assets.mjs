@@ -31,6 +31,7 @@ const OUT_JSON = resolve(ROOT, "data/item-stats.json");
 const ICON_DIR = resolve(ROOT, "data/icons");
 const OUT_UPGRADES = resolve(ROOT, "data/upgrades.json");
 const OUT_TASKS    = resolve(ROOT, "data/tasks.json");
+const OUT_NAMES    = resolve(ROOT, "data/item-names.json");
 
 const API  = process.env.API_BASE  || "https://query.idleclans.com";
 const WIKI = process.env.WIKI_BASE || "https://idleclans.wiki";
@@ -314,6 +315,33 @@ async function extractStats(game){
 
   const kb = (JSON.stringify(out).length / 1024).toFixed(0);
   console.log(`  wrote data/item-stats.json — ${withStats} items with bonuses, ~${kb}KB`);
+
+  /* Names, from the same dump. The live /api/Items/metadata endpoint does not
+     cover every id the market trades — that is why picks were reading
+     "item #158" — and it also arrives after the market panel has drawn itself.
+     A committed name map fixes both: complete, and there before first paint.
+
+     Two values per id: what to show, and the filename the icon fetcher used
+     (nameLocKey when there is one, else the normalised name), so the page can
+     find data/icons/<key>.png without repeating that rule. */
+  const names = {};
+  for (const raw of items){
+    const m = lower(raw);
+    const id = m.get("id") ?? m.get("itemid");
+    if (id == null) continue;
+    const display = m.get("name");
+    if (!display) continue;
+    const key = m.get("namelockey") || norm(String(display)).replace(/ /g, "_");
+    names[id] = [String(display), String(key)];
+  }
+  await writeFile(OUT_NAMES, JSON.stringify({
+    generatedAt: new Date().toISOString(),
+    count: Object.keys(names).length,
+    items: names
+  }) + "\n");
+  const nkb = (JSON.stringify(names).length / 1024).toFixed(0);
+  console.log(`  wrote data/item-names.json — ${Object.keys(names).length} names, ~${nkb}KB`);
+
   return withStats;
 }
 
