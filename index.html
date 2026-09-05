@@ -264,6 +264,7 @@ input[type="search"]{min-width:180px}
 .sk .n{font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:5px}
 /* Skill icons. image-rendering:pixelated keeps the game's small sprites crisp
    instead of smearing them when the browser scales them up. */
+.iicon{width:15px;height:15px;flex:0 0 auto;image-rendering:pixelated;vertical-align:-3px;margin-right:4px}
 .sicon{width:14px;height:14px;flex:0 0 auto;image-rendering:pixelated;vertical-align:-2px}
 .feed{display:grid;gap:1px}
 .fev{display:grid;grid-template-columns:132px 1fr;gap:10px;padding:5px 0;
@@ -1045,11 +1046,50 @@ const state = {
   clan:null, members:[], byName:new Map(),
   xp:{ 24:null, 168:null },
   timeline:[], logs:[], logArchive:null,
+  itemNames:null,           // id -> {name, key}, from the committed asset map
   items:new Map(),          // lowercase name -> {id,name,baseValue,tradeable}
   prices:new Map(),         // itemId -> price
   vault:null,
   route:"direct", loadedAt:null, errors:[]
 };
+
+/* =====================================================================
+   Item names and icons
+   ---------------------------------------------------------------------
+   /api/Items/metadata is not a complete list — it misses ids the market
+   actively trades, which is how a pick card ended up reading "item #158"
+   for Cooked zander — and it only arrives with the clan load, long after
+   the market panel has drawn itself from the snapshot file.
+
+   The asset job reads the game's own data dump and commits every id with
+   its display name and the filename its icon was saved under. Read that
+   once and both problems go away: complete, and available before first
+   paint.
+   ===================================================================== */
+let itemNamesPromise = null;
+function ensureItemNames(){
+  if (itemNamesPromise) return itemNamesPromise;
+  itemNamesPromise = fetch("./data/item-names.json", { cache:"no-store" })
+    .then(r => r.ok ? r.json() : null)
+    .catch(() => null)
+    .then(doc => {
+      state.itemNames = new Map();
+      if (doc && doc.items){
+        for (const [id, pair] of Object.entries(doc.items))
+          state.itemNames.set(Number(id), { name: pair[0], key: pair[1] });
+      }
+      return state.itemNames;
+    });
+  return itemNamesPromise;
+}
+
+/** The icon the asset job saved for this item — nothing at all if it has none. */
+function itemIcon(id, cls){
+  const n = state.itemNames ? state.itemNames.get(Number(id)) : null;
+  if (!n || !n.key) return "";
+  return `<img class="iicon ${cls || ""}" src="data/icons/${encodeURIComponent(n.key)}.png"
+            alt="" loading="lazy" onerror="this.remove()">`;
+}
 
 /* =====================================================================
    Vault log parsing
@@ -1724,8 +1764,11 @@ async function renderBonuses(gear){
 function renderMemberDetail(m){
   const prof = m.profile;
   const itemName = id => {
+    const label = n => (typeof itemLabel === "function" ? itemLabel(n) : n);
     const it = state.itemById ? state.itemById.get(id) : null;
-    return it ? (typeof itemLabel === "function" ? itemLabel(it.name) : it.name) : ("item #" + id);
+    if (it) return label(it.name);
+    const n = state.itemNames ? state.itemNames.get(Number(id)) : null;
+    return n ? label(n.name) : ("item #" + id);
   };
 
   const gear = (prof && prof.equipment) || {};
@@ -3915,9 +3958,12 @@ function planTrade(id, r, gold){
 }
 
 const itemNameFor = id => {
+  const label = n => (typeof itemLabel === "function" ? itemLabel(n) : n);
   const it = state.itemById ? state.itemById.get(Number(id)) : null;
-  if (!it) return "item #" + id;
-  return typeof itemLabel === "function" ? itemLabel(it.name) : it.name;
+  if (it) return label(it.name);
+  const n = state.itemNames ? state.itemNames.get(Number(id)) : null;
+  if (n) return label(n.name);
+  return "item #" + id;
 };
 
 /** Plain-English confidence, from the two things history can tell us. */
@@ -4016,7 +4062,7 @@ function renderPicks(){
     <div class="pick ${i === 0 ? "top" : ""}">
       <div class="rank">${i === 0 ? "Best use of your gold" : "Also worth doing"}</div>
       <div class="do">
-        Buy <b>${num(p.qty)} ${esc(itemNameFor(p.id))}</b> at <span class="buy">${num(p.buy)}</span>,
+        Buy <b>${num(p.qty)} ${itemIcon(p.id)}${esc(itemNameFor(p.id))}</b> at <span class="buy">${num(p.buy)}</span>,
         then sell them at <span class="sell">${num(p.sell)}</span>.
       </div>
       <div class="gain">Profit <b>${gold(p.profit)}</b> on ${gold(p.spend)} tied up
@@ -4048,7 +4094,7 @@ function renderPicks(){
        <div class="uph" style="margin:12px 0 6px">The rest of the plan
          <span class="n">${num(rest.length)}</span></div>
        <table class="mini"><tbody>${rest.map(p => `
-         <tr><td>${esc(itemNameFor(p.id))}</td>
+         <tr><td>${itemIcon(p.id)}${esc(itemNameFor(p.id))}</td>
              <td>${num(p.qty)} @ ${num(p.buy)}</td>
              <td>sell ${num(p.sell)}</td>
              <td class="pos">${gold(p.profit)}</td>
@@ -4086,7 +4132,9 @@ function initPicks(){
     apply(b.dataset.g);
   });
 
-  loadPicks().then(doc => { picksDoc = doc; renderPicks(); });
+  /* Names first, so the very first paint says "Cooked zander", never "item #158". */
+  Promise.all([loadPicks(), ensureItemNames()])
+    .then(([doc]) => { picksDoc = doc; renderPicks(); });
 }
 </script>
 <script>
@@ -4335,7 +4383,7 @@ function renderSkillCards(){
         ${r.xp ? num(r.xp) + " xp" : "no xp"}</div>
 
       <div class="mats">${r.parts.length
-        ? r.parts.map(p => `<span class="mat">${num(p.qty)}× ${esc(itemNameFor(p.id))}
+        ? r.parts.map(p => `<span class="mat">${num(p.qty)}× ${itemIcon(p.id)}${esc(itemNameFor(p.id))}
             <b>${gold(p.unit)}</b></span>`).join("")
         : '<span class="mat dim">no materials</span>'}</div>
 
@@ -4425,7 +4473,8 @@ function initSkills(){
   });
   Promise.all([
     fetch(TASKS_URL,  { cache:"no-store" }).then(r => r.ok ? r.json() : null).catch(() => null),
-    fetch(PRICES_URL, { cache:"no-store" }).then(r => r.ok ? r.json() : null).catch(() => null)
+    fetch(PRICES_URL, { cache:"no-store" }).then(r => r.ok ? r.json() : null).catch(() => null),
+    ensureItemNames()
   ]).then(([tasks, prices]) => {
     taskDoc = (tasks && tasks.tasks) ? tasks : null;
     skillPrices = (prices && prices.items) ? prices : null;
