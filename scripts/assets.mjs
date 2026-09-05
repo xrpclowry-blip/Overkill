@@ -316,32 +316,6 @@ async function extractStats(game){
   const kb = (JSON.stringify(out).length / 1024).toFixed(0);
   console.log(`  wrote data/item-stats.json — ${withStats} items with bonuses, ~${kb}KB`);
 
-  /* Names, from the same dump. The live /api/Items/metadata endpoint does not
-     cover every id the market trades — that is why picks were reading
-     "item #158" — and it also arrives after the market panel has drawn itself.
-     A committed name map fixes both: complete, and there before first paint.
-
-     Two values per id: what to show, and the filename the icon fetcher used
-     (nameLocKey when there is one, else the normalised name), so the page can
-     find data/icons/<key>.png without repeating that rule. */
-  const names = {};
-  for (const raw of items){
-    const m = lower(raw);
-    const id = m.get("id") ?? m.get("itemid");
-    if (id == null) continue;
-    const display = m.get("name");
-    if (!display) continue;
-    const key = m.get("namelockey") || norm(String(display)).replace(/ /g, "_");
-    names[id] = [String(display), String(key)];
-  }
-  await writeFile(OUT_NAMES, JSON.stringify({
-    generatedAt: new Date().toISOString(),
-    count: Object.keys(names).length,
-    items: names
-  }) + "\n");
-  const nkb = (JSON.stringify(names).length / 1024).toFixed(0);
-  console.log(`  wrote data/item-names.json — ${Object.keys(names).length} names, ~${nkb}KB`);
-
   return withStats;
 }
 
@@ -393,6 +367,12 @@ function guessFilenames(item){
 
   return [...out].map(([f, note]) => ({ file: f, note }));
 }
+
+/** The one place the icon filename is decided. Both the fetcher and the name
+    map call this, so data/icons/<key>.png always matches what the page asks for. */
+const iconKeyFor = item =>
+  String(item.nameLocKey || item.NameLocKey ||
+         norm(item.name ?? item.Name).replace(/ /g, "_"));
 
 const norm = s => String(s || "").toLowerCase()
   .replace(/\.png$/, "")
@@ -452,9 +432,35 @@ async function fetchIcons(){
     const s = slotOf(i);
     return s != null && String(s).toLowerCase() !== "none" && String(s) !== "-1";
   });
-  const targets = gear.length ? gear : list;
-  console.log(`  ${gear.length} equippable of ${list.length} total` +
-              (gear.length ? "" : " — no slot field recognised, trying all items"));
+
+  /* Every item, not just equipment. The first version fetched gear only, which
+     is why the market and skilling panels — ores, bars, fish, potions, seeds,
+     none of them wearable — showed names with no picture beside them. */
+  const targets = list;
+  console.log(`  ${list.length} items (${gear.length} of them equippable)`);
+
+  /* The name map is written from THIS list rather than the game-data dump.
+     Metadata carries a real display name ("Otherworldly gloves") where the
+     dump often carries only a loc key, and its nameLocKey is the exact
+     filename the loop below saves an icon under — so the page can never ask
+     for a key the fetcher didn't use. Written before any wiki call, so a
+     403 up there still leaves the page with names. */
+  const names = {};
+  for (const item of list){
+    const id = item.id ?? item.Id ?? item.itemId;
+    if (id == null) continue;
+    const display = item.name ?? item.Name;
+    if (!display) continue;
+    names[id] = [String(display), iconKeyFor(item)];
+  }
+  await mkdir(dirname(OUT_NAMES), { recursive: true });
+  await writeFile(OUT_NAMES, JSON.stringify({
+    generatedAt: new Date().toISOString(),
+    count: Object.keys(names).length,
+    items: names
+  }) + "\n");
+  console.log(`  wrote data/item-names.json — ${Object.keys(names).length} names, ` +
+              `~${(JSON.stringify(names).length / 1024).toFixed(0)}KB`);
 
   console.log("Asking the wiki for its image list…");
   let index = null;
@@ -471,7 +477,7 @@ async function fetchIcons(){
   const misses = [], approxList = [];
 
   for (const item of targets){
-    const key  = item.nameLocKey || norm(item.name).replace(/ /g, "_");
+    const key  = iconKeyFor(item);
     const file = `${key}.png`;
     if (have.has(file)){ already++; continue; }
 
