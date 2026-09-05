@@ -342,8 +342,30 @@ async function extractStats(game){
     for (const [k, { n, eg }] of [...candidates].sort((a, b) => b[1].n - a[1].n).slice(0, 20))
       console.log(`    ${k} — ${n} item(s), e.g. ${eg}`);
   } else {
-    console.log("  no skilling-bonus field found on items; skilling % cannot be derived from gear");
+    console.log("  no skilling-bonus field found by name");
   }
+
+  /* Guessing field names only finds fields I guessed right. The tool's 25% and
+     the cape's 20% did not show up, so dump EVERY numeric and boolean field on
+     a handful of items known to carry them. If 25 and 20 are in the data at
+     all, they are in this output; if they are not, the game derives them from
+     tier and no amount of reading items will produce them. */
+  const PROBE = [/^otherworldly_(hatchet|pickaxe|saw|harpoon|sickle|tinderbox|needle)/i,
+                 /completionist.*cape|cape.*completionist/i,
+                 /_enchanted$/i];
+  const shown = new Set();
+  for (const raw of items){
+    const m = lower(raw);
+    const nm = String(m.get("name") || m.get("namelockey") || "");
+    const hit = PROBE.find(re => re.test(nm));
+    if (!hit || shown.has(String(hit))) continue;
+    shown.add(String(hit));
+    const fields = [...m].filter(([, v]) =>
+      (typeof v === "number" || typeof v === "boolean") && v !== 0 && v !== false);
+    console.log(`  every field on ${nm}:`);
+    console.log("    " + fields.map(([k, v]) => `${k}=${v}`).join(", "));
+  }
+  if (!shown.size) console.log("  probe matched no items — name patterns need adjusting");
 
   return withStats;
 }
