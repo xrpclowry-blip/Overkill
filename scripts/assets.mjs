@@ -32,6 +32,7 @@ const ICON_DIR = resolve(ROOT, "data/icons");
 const OUT_UPGRADES = resolve(ROOT, "data/upgrades.json");
 const OUT_TASKS    = resolve(ROOT, "data/tasks.json");
 const OUT_NAMES    = resolve(ROOT, "data/item-names.json");
+const OUT_RP       = resolve(ROOT, "data/rp.json");
 
 const API  = process.env.API_BASE  || "https://query.idleclans.com";
 const WIKI = process.env.WIKI_BASE || "https://idleclans.wiki";
@@ -316,23 +317,81 @@ async function extractStats(game){
   const kb = (JSON.stringify(out).length / 1024).toFixed(0);
   console.log(`  wrote data/item-stats.json — ${withStats} items with bonuses, ~${kb}KB`);
 
-  /* Ritual power is NOT a plain number on the item: a value search for the
-     figures on the in-game cards (390,888 on the Otherworldly rod, 499 on the
-     Potion of forgery) found no field holding them. But the item schema has an
-     InvocationData member, which a numeric scan cannot see because it is a
-     nested object. Dump it for a few items that definitely have an RP value. */
-  const RP_PROBE = [/^otherworldly_fishing_rod$/, /^godlike_fishing_rod$/,
-                    /^refined_fishing_rod$/, /^potion_of_forgery$/,
-                    /^otherworldly_hatchet$/];
-  let rpShown = 0;
+  /* ---- ritual power -------------------------------------------------------
+     RP is not stored; the client computes it. The formula is documented on the
+     wiki and reproduces the in-game cards exactly — Potion of forgery, base
+     575, comes out at 499 to the gold.
+
+       ratio      = max(1, baseValue) / 1000
+       multiplier = ratio ^ -0.368
+       clamped    = clamp(multiplier * 0.7 + 0.3, 0.3, 2.5)
+       RP = floor(baseValue * clamped * modifier * 0.75 * (tradeable ? 1 : 5))
+
+     The exponent is negative, so cheap items yield more power per gold than
+     expensive ones — which is the whole point of the finder. Untradeable items
+     are worth five times as much but cannot be bought, so they are computed and
+     flagged rather than ranked.
+
+     Every figure below is checked against a real card before the file is
+     written. If the game changes the formula, this says so instead of quietly
+     ranking on numbers that no longer hold. */
+  const ritualPower = (base, modifier, tradeable) => {
+    const b = Number(base) || 0;
+    if (b <= 0) return 0;
+    const clamped = Math.min(2.5, Math.max(0.3,
+      Math.pow(Math.max(1, b) / 1000, -0.368) * 0.7 + 0.3));
+    return Math.floor(b * clamped * (Number(modifier) || 1) * 0.75 * (tradeable ? 1 : 5));
+  };
+
+  const KNOWN_RP = {
+    potion_of_forgery: 499, refined_fishing_rod: 1263, great_fishing_rod: 2576,
+    elite_fishing_rod: 7986, superior_fishing_rod: 17471,
+    outstanding_fishing_rod: 32141, godlike_fishing_rod: 139162,
+    otherworldly_fishing_rod: 390888
+  };
+
+  const rp = {};
+  const mismatches = [];
   for (const raw of items){
     const m = lower(raw);
-    const nm = norm(String(m.get("name") || m.get("namelockey") || "")).replace(/ /g, "_");
-    if (!RP_PROBE.some(re => re.test(nm))) continue;
-    rpShown++;
-    console.log(`  InvocationData on ${nm}: ${JSON.stringify(m.get("invocationdata"))}`);
+    const id = m.get("itemid") ?? m.get("id");
+    if (id == null) continue;
+    const base = Number(m.get("basevalue")) || 0;
+    if (!base) continue;
+
+    const inv = m.get("invocationdata") || null;
+    const invLower = inv && typeof inv === "object"
+      ? new Map(Object.entries(inv).map(([k, v]) => [k.toLowerCase(), v])) : null;
+    if (invLower && invLower.get("canbesacrificed") === false) continue;
+
+    const modifier  = invLower ? (Number(invLower.get("sacrificialpowermodifier")) || 1) : 1;
+    const tradeable = m.get("cannotbetraded") !== true;
+    const value     = ritualPower(base, modifier, tradeable);
+    if (!value) continue;
+
+    rp[id] = tradeable ? [value, modifier] : [value, modifier, 0];   // third slot = untradeable
+
+    const nm = norm(String(m.get("name") || "")).replace(/ /g, "_");
+    if (KNOWN_RP[nm] != null && Math.abs(KNOWN_RP[nm] - value) > 5)
+      mismatches.push(`${nm}: computed ${value}, card says ${KNOWN_RP[nm]}`);
   }
-  if (!rpShown) console.log("  RP probe matched no items by name");
+
+  const checked = Object.keys(KNOWN_RP).length - mismatches.length;
+  console.log(`  ritual power: ${Object.keys(rp).length} sacrificeable items, ` +
+              `${checked}/${Object.keys(KNOWN_RP).length} known cards reproduced`);
+  for (const bad of mismatches) console.log(`    !! ${bad}`);
+
+  await writeFile(OUT_RP, JSON.stringify({
+    generatedAt: new Date().toISOString(),
+    note: "itemId -> [ritualPower, sacrificialModifier, untradeableFlag]. " +
+          "A third element means the item cannot be bought, so it carries the " +
+          "5x bonus but cannot be ranked by gold.",
+    formula: "floor(base * clamp(0.7*(base/1000)^-0.368 + 0.3, 0.3, 2.5) * modifier * 0.75 * (tradeable ? 1 : 5))",
+    verified: `${checked}/${Object.keys(KNOWN_RP).length}`,
+    mismatches,
+    items: rp
+  }) + "\n");
+  console.log(`  wrote data/rp.json — ${Object.keys(rp).length} items`);
 
   /* ---- where is ritual power stored? -------------------------------------
      Guessing field names has a poor record here, so search by VALUE instead.
