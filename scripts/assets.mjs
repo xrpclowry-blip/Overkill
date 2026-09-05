@@ -847,7 +847,10 @@ function readCosts(raw){
     const m = new Map(Object.entries(c).map(([k, v]) => [k.toLowerCase(), v]));
     const id  = Number(m.get("item") ?? m.get("itemid") ?? m.get("id"));
     const amt = Number(m.get("amount") ?? m.get("count") ?? m.get("quantity") ?? 1);
-    if (Number.isFinite(id) && id > 0 && Number.isFinite(amt) && amt > 0) out.push([id, amt]);
+    /* id >= 0, not id > 0. Spruce log IS item zero, so the old test quietly
+       deleted it from every recipe that used it — spruce_plank came out with
+       no wood in it. A missing reference is -1 or absent, never 0. */
+    if (Number.isFinite(id) && id >= 0 && Number.isFinite(amt) && amt > 0) out.push([id, amt]);
   }
   return out;
 }
@@ -899,7 +902,9 @@ async function extractTasks(game){
       const outId  = Number(m.get("itemreward"));
       const outAmt = Number(m.get("itemamount"));
       const base   = Number(m.get("basetime"));
-      if (!Number.isFinite(outId) || outId <= 0){
+      /* Same falsy-zero trap on the other side: the Woodcutting task that
+         produces spruce logs was being counted as "no output" and dropped. */
+      if (!Number.isFinite(outId) || outId < 0){
         noOutput++;
         /* Six whole skills vanished through this branch — Farming, Carpentry,
            Foraging, Brewing, Enchanting, Plundering — yet a Farming task
