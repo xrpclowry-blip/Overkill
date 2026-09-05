@@ -393,36 +393,6 @@ async function extractStats(game){
   }) + "\n");
   console.log(`  wrote data/rp.json — ${Object.keys(rp).length} items`);
 
-  /* ---- where is ritual power stored? -------------------------------------
-     Guessing field names has a poor record here, so search by VALUE instead.
-     These figures are read off the in-game item cards, so whichever field
-     holds them is the one the RP finder needs. If a field name comes back
-     consistently across all four, that is the answer; if nothing matches, RP
-     is computed by the client and isn't in this file at all. */
-  const RP_KNOWN = {
-    otherworldly_fishing_rod: 390888,
-    godlike_fishing_rod:      139162,
-    refined_fishing_rod:      1263,
-    potion_of_forgery:        499
-  };
-  const rpHits = [];
-  for (const raw of items){
-    const m = lower(raw);
-    const nm = norm(String(m.get("name") || m.get("namelockey") || "")).replace(/ /g, "_");
-    const want = RP_KNOWN[nm];
-    if (want == null) continue;
-    const matches = [...m].filter(([, v]) => Number(v) === want).map(([k]) => k);
-    rpHits.push(`${nm}: ${matches.length ? matches.join(", ") : "NO FIELD HOLDS " + want}`);
-    /* Print every number on one of them, so a near-miss is still visible. */
-    if (nm === "potion_of_forgery"){
-      const nums = [...m].filter(([, v]) => typeof v === "number" && v !== 0)
-                         .map(([k, v]) => `${k}=${v}`);
-      console.log(`  every number on potion_of_forgery: ${nums.join(", ")}`);
-    }
-  }
-  console.log("  ritual-power field search (by known value):");
-  for (const line of rpHits) console.log(`    ${line}`);
-  if (!rpHits.length) console.log("    none of the four probe items were found by name");
 
 
   return withStats;
