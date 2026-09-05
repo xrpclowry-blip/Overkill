@@ -316,6 +316,35 @@ async function extractStats(game){
   const kb = (JSON.stringify(out).length / 1024).toFixed(0);
   console.log(`  wrote data/item-stats.json — ${withStats} items with bonuses, ~${kb}KB`);
 
+  /* ---- diagnostic, not a feature ----------------------------------------
+     Question being answered: does the game store a per-item SKILLING speed
+     bonus anywhere? This extractor has only ever looked for combat bonuses,
+     so if a skilling field exists we have never seen it. Print the distinct
+     numeric field names that could plausibly be one, with how many items
+     carry them and one example each.
+
+     If something like "skillingSpeedBonus" shows up, a member's skilling
+     percentage can be computed from the gear they are wearing. If nothing
+     shows up, it stays a number they type, and this block can be deleted. */
+  const candidates = new Map();
+  for (const raw of items){
+    const m = lower(raw);
+    const nm = m.get("name") || m.get("namelockey") || "?";
+    for (const [k, v] of m){
+      if (!/skill|speed|boost|gather|efficien|haste|yield|double/i.test(k)) continue;
+      if (!Number.isFinite(Number(v)) || Number(v) === 0) continue;
+      if (!candidates.has(k)) candidates.set(k, { n: 0, eg: `${nm} = ${v}` });
+      candidates.get(k).n++;
+    }
+  }
+  if (candidates.size){
+    console.log("  possible skilling-bonus fields:");
+    for (const [k, { n, eg }] of [...candidates].sort((a, b) => b[1].n - a[1].n).slice(0, 20))
+      console.log(`    ${k} — ${n} item(s), e.g. ${eg}`);
+  } else {
+    console.log("  no skilling-bonus field found on items; skilling % cannot be derived from gear");
+  }
+
   return withStats;
 }
 
