@@ -1053,6 +1053,25 @@ const state = {
 };
 
 /* =====================================================================
+   The hourly market snapshot
+   ---------------------------------------------------------------------
+   One file, read once, shared by the flip finder, the picks panel and
+   Skilling. The GitHub Action computes it every hour from the market's
+   bulk endpoints, which means the browser never has to ask the game for
+   anything per-item.
+   ===================================================================== */
+const SNAPSHOT_URL = "./data/market/latest.json";
+let snapshotPromise = null;
+function ensureSnapshot(){
+  if (snapshotPromise) return snapshotPromise;
+  snapshotPromise = fetch(SNAPSHOT_URL, { cache:"no-store" })
+    .then(r => r.ok ? r.json() : null)
+    .catch(() => null)
+    .then(doc => (doc && doc.items) ? doc : null);
+  return snapshotPromise;
+}
+
+/* =====================================================================
    Items that bind when you buy them
    ---------------------------------------------------------------------
    Premium permanent goes untradeable the moment you buy it, and making it
@@ -3126,7 +3145,49 @@ async function loadMarket(){
   $("#mktBody").hidden = false;
   renderMarket();
   if (typeof buildCreation === "function") buildCreation();
-  if (state.marketOpened) verifyTrickle();
+
+  /* The hourly snapshot already knows how much of each item trades and on how
+     many days, for all seven hundred of them. Ask it once. */
+  applySnapshot(state.market);
+}
+
+/**
+ * Fill in volume and reliability from the committed snapshot.
+ *
+ * This used to be done by fetching /history/{id} for every candidate, a few at
+ * a time, forever — which is why the full list sat at zeroes and "unverified":
+ * hundreds of requests that realistically never all landed. The Action does the
+ * same arithmetic hourly against the bulk endpoints, so the browser can just
+ * read the answer.
+ */
+async function applySnapshot(m){
+  const doc = await ensureSnapshot();
+  if (!doc || state.market !== m) return;
+
+  let filled = 0;
+  for (const c of m.candidates){
+    const r = doc.items[String(c.id)];
+    if (!r) continue;
+    const perDay = Number(r.volPerDay);
+    if (!Number.isFinite(perDay)) continue;
+
+    c.volPerDay = perDay;
+    if (Number(r.fair)) c.fair = Number(r.fair);
+    c.turnover = c.volPerDay * c.fair;
+
+    /* days/daysTraded arrive with snapshots taken after this was added; an
+       older file simply leaves reliability unknown rather than inventing it. */
+    if (Number.isFinite(Number(r.days)) && Number(r.days) > 0){
+      c.tracked = Number(r.days);
+      c.traded  = Number(r.daysTraded) || 0;
+      c.relPct  = Math.round(c.traded / c.tracked * 100);
+    }
+    c.fromSnapshot = true;
+    filled++;
+  }
+  console.log(`market: filled ${filled} of ${m.candidates.length} candidates from the snapshot`);
+  classify();
+  renderMarket();
 }
 
 /** Fold 30 days of history into a candidate. */
@@ -3162,7 +3223,7 @@ async function verifyTrickle(){
   if (!m || m.trickling) return;
   m.trickling = true;
   while (state.market === m){
-    const pick = m.candidates.filter(c => c.relPct == null && !c.verifying)
+    const pick = m.candidates.filter(c => c.relPct == null && !c.verifying && !c.fromSnapshot)
                              .slice(0, MKT.TRICKLE);
     if (!pick.length) break;
     let changed = false;
@@ -3910,14 +3971,7 @@ function parseGoldInput(raw){
   return Math.round(parseFloat(m[1]) * mult);
 }
 
-async function loadPicks(){
-  try {
-    const res = await fetch(PICKS_URL, { cache:"no-store" });
-    if (!res.ok) return null;
-    const doc = await res.json();
-    return (doc && doc.items) ? doc : null;
-  } catch { return null; }
-}
+const loadPicks = () => ensureSnapshot();
 
 /**
  * Work out the trade for one item, or say why there isn't one.
@@ -4508,7 +4562,7 @@ function initSkills(){
   });
   Promise.all([
     fetch(TASKS_URL,  { cache:"no-store" }).then(r => r.ok ? r.json() : null).catch(() => null),
-    fetch(PRICES_URL, { cache:"no-store" }).then(r => r.ok ? r.json() : null).catch(() => null),
+    ensureSnapshot(),
     ensureItemNames()
   ]).then(([tasks, prices]) => {
     taskDoc = (tasks && tasks.tasks) ? tasks : null;
