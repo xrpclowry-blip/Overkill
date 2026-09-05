@@ -4528,10 +4528,11 @@ function initPicks(){
    ===================================================================== */
 
 const TASKS_URL  = "./data/tasks.json";
+const RP_URL     = "./data/rp.json";
 const PRICES_URL = "./data/market/latest.json";
 const SKILL_TAX  = 0.01;
 
-let taskDoc = null, skillPrices = null;
+let taskDoc = null, skillPrices = null, rpDoc = null;
 let skillOpen = "";          // "" = the badge grid
 
 /* The game caps skilling boost at 80%. Everything is stored as the percentage
@@ -4747,6 +4748,79 @@ function skillRows(skill){
   return (taskDoc.tasks[skill] || []).map(t => planTask(t, skill)).filter(Boolean);
 }
 
+/* =====================================================================
+   Invocation — ritual power per gold
+   ---------------------------------------------------------------------
+   Every other skill here answers "what does an hour earn". Invocation
+   doesn't produce gold at all, it consumes it: you buy things and
+   sacrifice them for ritual power. So the question is inverted — not what
+   pays best, but what is cheapest per point.
+
+   The game's own formula has a negative exponent, which means cheap items
+   yield more power per gold than expensive ones. That is not intuition,
+   it is arithmetic, and it is why this list will look nothing like the
+   "buy the most valuable thing" instinct.
+
+   Only tradeable items appear. Untradeable ones are worth five times as
+   much, but you cannot buy them, so ranking them by gold would be
+   advice you can't take.
+   ===================================================================== */
+const INVOCATION = "Invocation";
+
+function rpRows(){
+  if (!rpDoc || !rpDoc.items) return [];
+  const rows = [];
+  for (const [id, rec] of Object.entries(rpDoc.items)){
+    if (!Array.isArray(rec) || rec.length > 2) continue;   // 3rd slot = untradeable
+    const power = Number(rec[0]) || 0;
+    const cost  = buyPrice(id);
+    if (!power || !cost) continue;
+    const vol = dailyVolume(id);
+    if (!vol) continue;                                    // can't buy what doesn't trade
+    rows.push({
+      id, power, cost, vol, modifier: Number(rec[1]) || 1,
+      perK: (power / cost) * 1000,                         // RP per 1,000 gold
+      dayRp: power * vol,                                  // if you took the whole day's supply
+      dayCost: cost * vol
+    });
+  }
+  rows.sort((a, b) => b.perK - a.perK);
+  return rows;
+}
+
+function renderInvocation(){
+  const host = $("#skillBody");
+  const rows = rpRows();
+
+  $("#skillHint").innerHTML =
+    `<a href="#" id="skBack">&larr; all skills</a> · ` +
+    (rows.length
+      ? `${num(rows.length)} tradeable items ranked by ritual power per gold. The game's ` +
+        `formula rewards cheap items, so the top of this list is deliberately unglamorous.`
+      : `No ritual power data yet — the asset job writes <code>data/rp.json</code>.`) +
+      (rpDoc && rpDoc.mismatches && rpDoc.mismatches.length
+        ? ` <strong class="neg">${num(rpDoc.mismatches.length)} item(s) didn't match their in-game card; the formula may have changed.</strong>`
+        : "");
+
+  host.innerHTML = rows.length ? `<div class="skcards">${rows.slice(0, 24).map(r => `
+    <div class="skcard">
+      <div class="hd">
+        <span class="t">${itemIcon(r.id)}${esc(itemNameFor(r.id))}</span>
+        ${r.modifier > 1 ? `<span class="lv">×${r.modifier}</span>` : ""}
+      </div>
+      <div class="sub">${num(r.vol)} trade a day</div>
+      <div class="lines">
+        <div><span>Costs</span><b>${gold(r.cost)}</b></div>
+        <div><span>Gives</span><b>${num(r.power)} RP</b></div>
+        <div class="big"><span>Per 1K gold</span>
+          <b class="pos">${num(Math.round(r.perK))} RP</b></div>
+      </div>
+      <div class="cap">Buying everything that trades in a day costs ${gold(r.dayCost)}
+        and yields ${abbr(r.dayRp)} RP.</div>
+    </div>`).join("")}</div>`
+    : `<div class="empty" style="padding:12px 0">Nothing priceable to sacrifice yet.</div>`;
+}
+
 /* ---------------- badge grid ---------------- */
 /* The extractor finds ItemCreation alongside the real skills because the game
    files group them together, but it is not a skill and it already has its own
@@ -4755,7 +4829,11 @@ const NOT_A_SKILL = new Set(["ItemCreation"]);
 
 function renderSkillGrid(){
   const host = $("#skillBody");
-  const names = Object.keys(taskDoc.tasks).filter(n => !NOT_A_SKILL.has(n)).sort();
+  const names = Object.keys(taskDoc.tasks).filter(n => !NOT_A_SKILL.has(n));
+  /* Invocation has no tasks — it consumes items rather than producing them —
+     so it is added here rather than coming from the task file. */
+  if (rpDoc && rpDoc.items && !names.includes(INVOCATION)) names.push(INVOCATION);
+  names.sort();
   $("#skillHint").innerHTML =
     `Materials priced at what you'd <strong>pay</strong>, output at what you'd ` +
     `<strong>receive</strong>, after the 1% tax · rates capped by what the market ` +
@@ -4769,6 +4847,16 @@ function renderSkillGrid(){
       : `Upgrade tiers are <strong>assumed maxed</strong> — pick a member above to use theirs.`);
 
   host.innerHTML = `<div class="skgrid">${names.map(n => {
+    if (n === INVOCATION){
+      const best = rpRows()[0];
+      return `<div class="skbadge" data-skill="${esc(INVOCATION)}" role="button" tabindex="0">
+        ${skillIcon("invocation", "big")}
+        <div class="nm">Invocation</div>
+        <div class="bt">${best
+          ? `${num(Math.round(best.perK))}<span> RP per 1K gp · ${esc(itemNameFor(best.id))}</span>`
+          : '<span class="dim">no ritual power data</span>'}</div>
+      </div>`;
+    }
     const byXp = skillRank === "xp";
     const rows = skillRows(n).filter(r => byXp ? r.xpHour != null : r.perDay != null);
     const best = rows.sort((a, b) => byXp ? b.xpHour - a.xpHour : b.perDay - a.perDay)[0];
@@ -4857,7 +4945,8 @@ function syncSpeedUI(writeValue){
   const lbl = $("#skillSpeedLbl");
   if (lbl) lbl.textContent = skillOpen ? `${spaceCase(skillOpen)} speed` : "Skilling speed";
   const wrap = $("#skillPctWrap");
-  if (wrap) wrap.hidden = !skillOpen;          // on the grid, every badge has its own
+  // Invocation has no clock, so no speed to set.
+  if (wrap) wrap.hidden = !skillOpen || skillOpen === INVOCATION;
   const box = $("#skillPotWrap"), pot = POTIONS[skillOpen];
   if (box){
     box.hidden = !pot;
@@ -4902,7 +4991,8 @@ function renderSkills(){
   const bar = $("#skillPct"); if (bar) bar.closest(".controls").hidden = !(taskDoc && skillPrices);
   if (!taskDoc){ hint.textContent = "No task data yet — the asset job writes data/tasks.json."; host.innerHTML = ""; return; }
   if (!skillPrices){ hint.textContent = "No price snapshot yet — the hourly job writes data/market/latest.json."; host.innerHTML = ""; return; }
-  if (skillOpen && taskDoc.tasks[skillOpen] && !NOT_A_SKILL.has(skillOpen)) renderSkillCards();
+  if (skillOpen === INVOCATION) renderInvocation();
+  else if (skillOpen && taskDoc.tasks[skillOpen] && !NOT_A_SKILL.has(skillOpen)) renderSkillCards();
   else renderSkillGrid();
 }
 
@@ -4976,10 +5066,12 @@ function initSkills(){
   Promise.all([
     fetch(TASKS_URL,  { cache:"no-store" }).then(r => r.ok ? r.json() : null).catch(() => null),
     ensureSnapshot(),
-    ensureItemNames()
-  ]).then(([tasks, prices]) => {
+    ensureItemNames(),
+    fetch(RP_URL, { cache:"no-store" }).then(r => r.ok ? r.json() : null).catch(() => null)
+  ]).then(([tasks, prices, , rpd]) => {
     taskDoc = (tasks && tasks.tasks) ? tasks : null;
     skillPrices = (prices && prices.items) ? prices : null;
+    rpDoc = (rpd && rpd.items) ? rpd : null;
     renderSkills(); syncSpeedUI(true);
   });
 }
