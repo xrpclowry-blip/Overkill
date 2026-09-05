@@ -2989,6 +2989,10 @@ async function loadMilestoneArchive(){
     if (!res.ok) return null;
     const doc = await res.json();
     if (!doc || !Array.isArray(doc.events)) return null;
+    /* The first run usually writes an empty archive — our share of a 200-row
+       global feed is often zero. Treat that as "no history yet" rather than
+       claiming a start date there isn't one for. */
+    if (!doc.events.length || !doc.oldest) return doc;
     state.feedArchive = { count: doc.count || doc.events.length, oldest: doc.oldest };
     mergeMilestones(doc.events, true);
     return doc;
@@ -4810,37 +4814,128 @@ function rpRows(){
   return rows;
 }
 
+let rpTarget = 1440000;          // a ritual at Chris's level; editable
+let rpSort   = "perK";
+
+const RP_COLS = [
+  { key:"name",  label:"Item",      num:false, get:r => itemNameFor(r.id),
+    cell:r => `${itemIcon(r.id)}${esc(itemNameFor(r.id))}` +
+              (r.modifier > 1 ? ` <span class="pill mid">×${Math.round(r.modifier * 100) / 100}</span>` : "") },
+  { key:"cost",  label:"Price",     get:r => r.cost,   cell:r => num(r.cost) },
+  { key:"power", label:"RP each",   get:r => r.power,  cell:r => num(r.power) },
+  { key:"perK",  label:"RP per 1K gold", get:r => r.perK,
+    cell:r => `<strong class="pos">${num(Math.round(r.perK))}</strong>` },
+  { key:"vol",   label:"Trades / day", get:r => r.vol, cell:r => abbr(r.vol) },
+  { key:"dayRp", label:"RP available / day", get:r => r.dayRp, cell:r => abbr(r.dayRp) },
+  { key:"dayCost", label:"Cost of a day's supply", get:r => r.dayCost, cell:r => abbr(r.dayCost) }
+];
+
+/**
+ * The cheapest route to a target, taking whole days of supply.
+ *
+ * Ranking by RP-per-gold alone is only half an answer: the best rate in the
+ * game is no use if the market only moves 754 of them a day and the ritual
+ * wants 1,440,000 power. So walk the list cheapest-first, take everything each
+ * item trades, and stop when the target is met — that is the real bill, and
+ * the number of items it takes is the real inconvenience.
+ *
+ * Taking a full day's supply would move the price against you, so this is a
+ * floor on the cost rather than a quote.
+ */
+function rpPlan(rows, target){
+  const picked = [];
+  let power = 0, cost = 0;
+  for (const r of rows){
+    if (power >= target) break;
+    const need  = target - power;
+    const take  = Math.min(r.vol, Math.ceil(need / r.power));
+    if (take < 1) continue;
+    picked.push({ ...r, take, gives: take * r.power, spend: take * r.cost });
+    power += take * r.power;
+    cost  += take * r.cost;
+  }
+  return { picked, power, cost, short: power < target };
+}
+
 function renderInvocation(){
   const host = $("#skillBody");
   const rows = rpRows();
+  const sorted = [...rows].sort((a, b) => {
+    const col = RP_COLS.find(c => c.key === rpSort) || RP_COLS[3];
+    const av = col.get(a), bv = col.get(b);
+    return typeof av === "string" ? String(av).localeCompare(String(bv)) : bv - av;
+  });
 
   $("#skillHint").innerHTML =
     `<a href="#" id="skBack">&larr; all skills</a> · ` +
     (rows.length
-      ? `${num(rows.length)} tradeable items ranked by ritual power per gold. The game's ` +
-        `formula rewards cheap items, so the top of this list is deliberately unglamorous.`
+      ? `${num(rows.length)} tradeable items you can sacrifice, priced from the market. ` +
+        `The game's formula pays more per gold for cheap items, so what matters is not just ` +
+        `the rate but whether enough of them trade.`
       : `No ritual power data yet — the asset job writes <code>data/rp.json</code>.`) +
       (rpDoc && rpDoc.mismatches && rpDoc.mismatches.length
-        ? ` <strong class="neg">${num(rpDoc.mismatches.length)} item(s) didn't match their in-game card; the formula may have changed.</strong>`
+        ? ` <strong class="neg">${num(rpDoc.mismatches.length)} item(s) didn't match their in-game card.</strong>`
         : "");
 
-  host.innerHTML = rows.length ? `<div class="skcards">${rows.slice(0, 24).map(r => `
-    <div class="skcard">
-      <div class="hd">
-        <span class="t">${itemIcon(r.id)}${esc(itemNameFor(r.id))}</span>
-        ${r.modifier > 1 ? `<span class="lv">×${r.modifier}</span>` : ""}
-      </div>
-      <div class="sub">${num(r.vol)} trade a day</div>
-      <div class="lines">
-        <div><span>Costs</span><b>${gold(r.cost)}</b></div>
-        <div><span>Gives</span><b>${num(r.power)} RP</b></div>
-        <div class="big"><span>Per 1K gold</span>
-          <b class="pos">${num(Math.round(r.perK))} RP</b></div>
-      </div>
-      <div class="cap">Buying everything that trades in a day costs ${gold(r.dayCost)}
-        and yields ${abbr(r.dayRp)} RP.</div>
-    </div>`).join("")}</div>`
-    : `<div class="empty" style="padding:12px 0">Nothing priceable to sacrifice yet.</div>`;
+  if (!rows.length){
+    host.innerHTML = '<div class="empty" style="padding:12px 0">Nothing priceable to sacrifice yet.</div>';
+    return;
+  }
+
+  const plan = rpPlan(sorted.slice().sort((a, b) => b.perK - a.perK), rpTarget);
+
+  host.innerHTML = `
+    <div class="controls" style="margin-bottom:12px">
+      <label class="capbar">Ritual needs
+        <span class="pctwrap"><input id="rpTarget" type="text" inputmode="numeric"
+          value="${num(rpTarget)}" style="width:104px;text-align:right;padding-right:10px"></span>
+        RP
+      </label>
+      <span class="seg" id="rpPresets">
+        <button data-rp="720000">720K</button>
+        <button data-rp="1440000">1.44M</button>
+        <button data-rp="5000000">5M</button>
+      </span>
+    </div>
+
+    <div class="panel" style="background:var(--surface-2);margin-bottom:14px">
+      <h2>Cheapest route to ${abbr(rpTarget)} RP</h2>
+      ${plan.short
+        ? `<p class="hint" style="margin:0">Everything on the market in a day comes to
+             <strong>${abbr(plan.power)} RP</strong> — short of ${abbr(rpTarget)}. You'd need
+             <strong>${(rpTarget / Math.max(1, plan.power)).toFixed(1)} days</strong> of buying
+             the entire supply, at roughly ${gold(plan.cost * (rpTarget / Math.max(1, plan.power)))}.</p>`
+        : `<p class="hint" style="margin:0 0 10px">
+             <strong>${gold(plan.cost)}</strong> across <strong>${num(plan.picked.length)}</strong>
+             ${plan.picked.length === 1 ? "item" : "different items"} — buying a day's supply of each,
+             cheapest rate first. Taking that much would push the price up, so treat it as a floor.</p>
+           <div class="chips">${plan.picked.map(p =>
+             `<span class="chip" title="${esc(itemNameFor(p.id))} — ${num(p.take)} at ${num(p.cost)} gp">
+               ${itemIcon(p.id)}<b>${num(p.take)}</b>×${esc(itemNameFor(p.id))}
+               <span class="dim">${abbr(p.gives)} RP</span></span>`).join("")}</div>`}
+    </div>
+
+    <div class="tbl-scroll"><table id="rpTable">
+      <thead><tr>${RP_COLS.map(c =>
+        `<th data-rp-sort="${c.key}">${esc(c.label)}${
+          rpSort === c.key ? ' <span class="ar">▾</span>' : ""}</th>`).join("")}</tr></thead>
+      <tbody>${sorted.slice(0, 120).map(r =>
+        `<tr>${RP_COLS.map(c => `<td>${c.cell(r)}</td>`).join("")}</tr>`).join("")}</tbody>
+    </table></div>
+    ${sorted.length > 120 ? `<p class="hint" style="margin-top:10px">Showing the top 120 of
+      ${num(sorted.length)}.</p>` : ""}`;
+
+  $$("#rpTable th").forEach(th => th.onclick = () => {
+    rpSort = th.dataset.rpSort; renderInvocation();
+  });
+  const box = $("#rpTarget");
+  if (box) box.onchange = () => {
+    const v = Math.round(Number(String(box.value).replace(/[^0-9.]/g, "")) || 0);
+    if (v > 0){ rpTarget = v; renderInvocation(); }
+  };
+  $$("#rpPresets button").forEach(btn => btn.onclick = () => {
+    rpTarget = Number(btn.dataset.rp); renderInvocation();
+  });
 }
 
 /* ---------------- badge grid ---------------- */
@@ -4875,7 +4970,7 @@ function renderSkillGrid(){
         ${skillIcon("invocation", "big")}
         <div class="nm">Invocation</div>
         <div class="bt">${best
-          ? `${num(Math.round(best.perK))}<span> RP per 1K gp · ${esc(itemNameFor(best.id))}</span>`
+          ? `${num(Math.round(best.perK))}<span> RP per 1K gp · best of ${num(rpRows().length)}</span>`
           : '<span class="dim">no ritual power data</span>'}</div>
       </div>`;
     }
