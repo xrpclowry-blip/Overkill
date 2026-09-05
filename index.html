@@ -1087,7 +1087,7 @@ const state = {
   clan:null, members:[], byName:new Map(),
   xp:{ 24:null, 168:null },
   timeline:[], logs:[], logArchive:null,
-  standings:undefined,      // undefined = not asked yet, null = asked and unavailable
+  standings:undefined, feedArchive:null,      // undefined = not asked yet, null = asked and unavailable
   itemNames:null,           // id -> {name, key}, from the committed asset map
   items:new Map(),          // lowercase name -> {id,name,baseValue,tradeable}
   prices:new Map(),         // itemId -> price
@@ -2574,7 +2574,8 @@ async function loadExtras(){
     api(`/api/Clan/experience/top?hours=168&limit=${BOARD_LIMIT}`, { optional:true }),
     loadHistory(),
     api(`/api/Milestone/recent?count=200`, { optional:true }),
-    loadStandings()          // not destructured; it parks itself on state
+    loadStandings(),         // not destructured; it parks itself on state
+    loadMilestoneArchive()   // likewise — it seeds state.feed before the merge
   ]);
   mergeMilestones(milestones);
 
@@ -2977,12 +2978,29 @@ function renderPresence(){
    seen in this session and merge each poll into it, which turns a thin slice
    into a feed worth reading. It is not history: a reload starts over, and the
    daily snapshot is what would make it permanent. */
-const FEED_MAX = 60;
+const FEED_MAX = 400;
 
-function mergeMilestones(list){
+/* The archive job commits what the global feed showed it, twenty minutes at a
+   time. Read it once and seed the session with it, so the panel opens with
+   weeks of history instead of whatever happens to drift past while you watch. */
+async function loadMilestoneArchive(){
+  try {
+    const res = await fetch("./data/milestones.json", { cache:"no-store" });
+    if (!res.ok) return null;
+    const doc = await res.json();
+    if (!doc || !Array.isArray(doc.events)) return null;
+    state.feedArchive = { count: doc.count || doc.events.length, oldest: doc.oldest };
+    mergeMilestones(doc.events, true);
+    return doc;
+  } catch { return null; }
+}
+
+function mergeMilestones(list, fromArchive){
   if (!Array.isArray(list)) return;
   const seen = new Set(state.feed.map(f => f.id));
-  const mine = list.filter(e => (e.clan || "").toLowerCase() === CLAN.toLowerCase());
+  const mine = fromArchive
+    ? list
+    : list.filter(e => (e.clan || "").toLowerCase() === CLAN.toLowerCase());
   for (const e of mine){
     const id = `${e.username}|${e.timestamp}|${e.skill || e.itemId}`;
     if (seen.has(id)) continue;
@@ -3001,10 +3019,14 @@ function renderFeed(){
 
   const levels = state.feed.filter(e => e.type === 1).length;
   const drops  = state.feed.length - levels;
-  $("#feedHint").textContent =
-    `${num(state.feed.length)} milestone${state.feed.length === 1 ? "" : "s"} seen since this page loaded` +
+  const arc = state.feedArchive;
+  $("#feedHint").innerHTML =
+    `${num(state.feed.length)} milestone${state.feed.length === 1 ? "" : "s"}` +
     ` · ${num(levels)} level-up${levels === 1 ? "" : "s"}, ${num(drops)} drop${drops === 1 ? "" : "s"}` +
-    ` · the game's feed is global, so this fills in as events pass through it`;
+    (arc
+      ? ` · recorded back to <strong>${esc(dateShort(new Date(Number(arc.oldest) * 1000)))}</strong>`
+      : ` · <strong>no archive yet</strong> — the game's feed is global, so without one this only
+          shows what drifts past while the page is open`);
 
   $("#feedList").innerHTML = `<div class="feed">${state.feed.map(e => {
     const when = new Date(e.timestamp * 1000);
