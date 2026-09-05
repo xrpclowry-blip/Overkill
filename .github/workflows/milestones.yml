@@ -1,0 +1,60 @@
+name: Milestone archive
+
+# The milestone feed is global — the last 200 events across every clan — so
+# Overkill's share of any one poll is a handful of rows and often none. Read it
+# on a schedule and keep what passes through, or it is only ever visible to
+# whoever happens to have the page open at the right moment.
+#
+# Twenty minutes sits comfortably inside the window 200 global rows covers.
+
+on:
+  schedule:
+    - cron: "*/20 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: milestones
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Read the milestone feed
+        run: node scripts/milestones.mjs
+
+      - name: Commit the archive
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Stage first: on the very first run this file is untracked, and
+          # `git diff` on the working tree cannot see untracked files.
+          git add -A data/milestones.json
+
+          if git diff --cached --quiet; then
+            echo "No new milestones; not committing."
+            exit 0
+          fi
+
+          git commit -m "Milestones $(date -u +%Y-%m-%dT%H:%MZ)"
+
+          # This runs three times an hour alongside the market and clan-log
+          # jobs, so a push landing underneath it is routine, not exceptional.
+          for attempt in 1 2 3 4 5; do
+            if git push; then exit 0; fi
+            echo "Push rejected, rebasing and retrying ($attempt)…"
+            git pull --rebase --autostash || true
+            sleep $((attempt * 4))
+          done
+          echo "Could not push after 5 attempts."
+          exit 1
