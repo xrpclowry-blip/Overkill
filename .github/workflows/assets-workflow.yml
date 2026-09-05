@@ -11,6 +11,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: item-assets
+  cancel-in-progress: false
+
 jobs:
   assets:
     runs-on: ubuntu-latest
@@ -44,4 +48,16 @@ jobs:
           echo "  … $(git diff --cached --name-only | wc -l) files total"
 
           git commit -m "Rebuild item assets $(date -u +%Y-%m-%d)"
-          git push
+
+          # This job downloads a thousand images, so it runs for minutes — long
+          # enough for the hourly market snapshot or the clan-log archive to
+          # land on main underneath it. A bare push loses the whole rebuild to
+          # a fast-forward rejection. Rebase onto whatever arrived and retry.
+          for attempt in 1 2 3 4 5; do
+            if git push; then exit 0; fi
+            echo "Push rejected, rebasing and retrying ($attempt)…"
+            git pull --rebase --autostash || true
+            sleep $((attempt * 5))
+          done
+          echo "Could not push after 5 attempts."
+          exit 1
