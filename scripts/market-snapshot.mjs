@@ -126,6 +126,16 @@ async function main(){
       if (last7.length) row.volPerDay = Math.round(last7.reduce((a, b) => a + b, 0) / last7.length);
       if (complete.length) row.volPrevDay = Math.round(complete[complete.length - 1]);
       row.volToday = Math.round(dailyVols[dailyVols.length - 1] || 0);   // partial
+
+      /* How reliably it trades, over the same complete days. The dashboard used
+         to work this out by fetching each item's 30-day history one at a time —
+         hundreds of requests that mostly never finished, which is why the full
+         list sat at "traded today · unverified" with zeroes beside it. Two
+         integers here answer it for every item at once. */
+      if (complete.length){
+        row.days = complete.length;
+        row.daysTraded = complete.filter(v => v > 0).length;
+      }
     }
     if (s && s.lastTradeTimestamp) row.lastTrade = s.lastTradeTimestamp;
     rows[id] = row;
