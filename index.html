@@ -1053,6 +1053,59 @@ const state = {
 };
 
 /* =====================================================================
+   How much to buy, and the ceiling on what you can hold
+   ---------------------------------------------------------------------
+   There used to be three answers to "what share of a day's volume can I
+   take": the flip finder said 10%, picks in quick mode said 33%, picks in
+   patient mode said 50%. Same question, same market, three numbers, and
+   nothing reconciling them — so a member reading both panels got two
+   different sizes for one trade.
+
+   One rule now. Take at most a tenth of what an item trades in a day; if
+   you need the round trip finished inside a day, half that, because it is
+   two fills and not one. The tenth is deliberately the most conservative
+   of the three it replaces: none of them was measured, and recommending
+   too small a position costs a member some upside, while too large a one
+   leaves them holding stock that will not move. When the hourly snapshots
+   have watched enough orders fill, this is the first constant that should
+   be replaced with something observed.
+
+   The ceiling is not a guess. Gold is capped at 2,000,000,000 — sell a
+   stack for more and the overflow is simply gone.
+   ===================================================================== */
+const FLOW_SHARE = 0.10;
+const GOLD_CAP   = 2000000000;
+
+/* Gold is item 19 in the game's own item list, and recipes reference it the
+   same way they reference an ore. It is not a market item — you cannot buy it
+   from anyone — so anything that looks up a price for it comes back empty. */
+const GOLD_ID = 19;
+
+/**
+ * The largest position worth taking in one item.
+ *   vol       units traded in a day
+ *   sellPrice what you expect to receive per unit, before tax
+ *   gold      what you have to spend
+ *   buyPrice  what each one costs, including any fee paid per unit
+ *   quick     true when both legs have to finish inside a day
+ * Returns the quantity and which limit bound it, so the panel can say why.
+ */
+function positionSize({ vol, gold, buyPrice, sellPrice, quick }){
+  const share  = quick ? FLOW_SHARE / 2 : FLOW_SHARE;
+  const byFlow = Math.floor((Number(vol) || 0) * share);
+  const byGold = buyPrice > 0 ? Math.floor(gold / buyPrice) : 0;
+
+  /* Proceeds you could not hold are not profit. Cap the position so one
+     completed round trip cannot overflow the 2B ceiling. */
+  const byCap = sellPrice > 0 ? Math.floor(GOLD_CAP / sellPrice) : Infinity;
+
+  const qty = Math.max(0, Math.min(byFlow, byGold, byCap));
+  const limitedBy = qty === byCap && byCap <= byFlow && byCap <= byGold ? "cap"
+                  : byFlow <= byGold ? "flow" : "gold";
+  return { qty, byFlow, byGold, byCap, limitedBy };
+}
+
+/* =====================================================================
    The hourly market snapshot
    ---------------------------------------------------------------------
    One file, read once, shared by the flip finder, the picks panel and
@@ -2983,7 +3036,6 @@ function initExtras(){
 
 const MKT = {
   TAX: 0.01,            // sell tax, confirmed from market-settings
-  SHARE: 0.10,          // never take more than this slice of a day's volume
   FAIR_HEADROOM: 1.05,  // don't plan to sell more than 5% above fair value
   FANTASY: 1.25,        // an ask this far above fair value isn't a real price
   THIN: 0.34,           // trades on fewer than a third of days = unreliable
@@ -3265,7 +3317,12 @@ function classify(){
           reason:`Best bid is only ${(c.buyAt / c.fair * 100).toFixed(0)}% of what it's worth — an offer there wouldn't fill` });
         continue;
       }
-      c.safeQty = Math.floor(c.volPerDay * MKT.SHARE);
+      /* Same rule the picks panel uses. This is a list-and-wait table, so it
+         gets the patient share rather than the halved one. */
+      c.safeQty = positionSize({
+        vol: c.volPerDay, gold: Infinity,
+        buyPrice: c.buyAt + (c.bindFee || 0), sellPrice: c.listAt, quick: false
+      }).qty;
       if (c.safeQty < 1){
         rejects.push({ ...c, reason:"Too thin to take a position inside a day",
                        apparent:c.marginPct }); continue;
@@ -3298,9 +3355,18 @@ function classify(){
 /* --------------------------------------------------------------------- */
 /* Position sizing depends on capital, so it's computed at render time.   */
 function sized(r){
-  const byCapital = state.mktCapital ? Math.floor(state.mktCapital / r.buyAt) : Infinity;
-  const qty = Math.max(0, Math.min(r.safeQty, byCapital));
-  return { qty, potential: qty * r.profitPerUnit, outlay: qty * r.buyAt };
+  /* The same rule the picks panel uses, so the two panels can no longer give
+     different answers for the same item. Capital, daily flow and the 2B gold
+     ceiling are all applied in one place. */
+  const s = positionSize({
+    vol: r.volPerDay,
+    gold: state.mktCapital || Infinity,
+    buyPrice: r.buyAt + (r.bindFee || 0),
+    sellPrice: r.listAt,
+    quick: false
+  });
+  return { ...s, potential: s.qty * r.profitPerUnit,
+           outlay: s.qty * (r.buyAt + (r.bindFee || 0)) };
 }
 
 const MKT_COLS = [
@@ -3922,8 +3988,6 @@ const PICK = {
   /* You are first in the queue at your price, but not the only trader. A third
      of the item's flow is a deliberately modest assumption — better to promise
      six hours and take four than the reverse. */
-  FLOW_SHARE: 0.33,
-  TARGET_HOURS: 24,   // "profit within a day" is the brief
   MIN_VOL: 20,        // fewer trades a day than this and a fill is a coin flip
   MIN_MARGIN: 0.04,   // under 4% net, one bad tick eats the trade
   MAX_OVER_FAIR: 1.05,// never buy above what the item actually trades for
@@ -3939,7 +4003,6 @@ const PICK = {
   /* Patient orders don't compete for the day's flow — they wait for someone
      who wants out. You can leave a big one sitting, so the cap is a share of
      daily volume rather than a race against the clock. */
-  PATIENT_SHARE: 0.50,
   /* However patient you are, you cannot sell above what people pay. A resting
      ask of 4,000,000 on an item that trades at 120 is not an exit — it is
      someone's daydream, and pricing against it invented a 3,920,690% margin in
@@ -4012,28 +4075,25 @@ function planTrade(id, r, gold){
   const a1 = Number(r.avg1d) || 0, a7 = Number(r.avg7) || 0;
   if (a1 && a7 && a1 < a7 * PICK.KNIFE) return null;   // price falling hard
 
-  let qty, hours = null, limitedBy;
-  if (patient){
-    /* No race, so no clock we can honestly put on it. Size by what the item
-       moves in a day, and say plainly that the wait is unknown until the
-       hourly snapshots have watched orders like this fill. */
-    const byFlow = Math.floor(vol * PICK.PATIENT_SHARE);
-    /* You need the unbind fee as well as the purchase price, so size on both. */
-    const byGold = Math.floor(gold / (buy + bindFee));
-    qty = Math.max(0, Math.min(byFlow, byGold));
-    limitedBy = byFlow <= byGold ? "flow" : "gold";
-  } else {
-    const perHour = (vol / 24) * PICK.FLOW_SHARE;
-    const byFlow  = Math.floor((perHour * PICK.TARGET_HOURS) / 2);
-    const byGold  = Math.floor(gold / (buy + bindFee));
-    qty = Math.max(0, Math.min(byFlow, byGold));
-    hours = perHour > 0 ? (2 * qty) / perHour : Infinity;
-    limitedBy = byFlow <= byGold ? "flow" : "gold";
-  }
+  /* One sizing rule for both panels — see positionSize. Patient mode makes no
+     claim about a clock, so it takes the full share; quick mode has to finish
+     two fills inside a day, so it takes half. The unbind fee is part of what
+     each unit costs you, so it sizes against gold alongside the price. */
+  const size = positionSize({
+    vol, gold, buyPrice: buy + bindFee, sellPrice: sell, quick: !patient
+  });
+  const qty = size.qty;
+  const limitedBy = size.limitedBy;
   if (qty < 1) return null;
 
+  let hours = null;
+  if (!patient){
+    const perHour = (vol / 24) * (FLOW_SHARE / 2);
+    hours = perHour > 0 ? (2 * qty) / perHour : Infinity;
+  }
+
   return {
-    id, buy, sell, net, margin, qty, vol, anchor, patient, bindFee,
+    id, buy, sell, net, margin, qty, vol, anchor, patient, bindFee, byCap: size.byCap,
     farFromTraded: anchor ? buy < anchor * 0.75 : false,
     profit: qty * net,
     hours,
@@ -4372,14 +4432,24 @@ function planTask(t, skill){
   const parts = [];
   let cost = 0;
   for (const [id, qty] of (t.costs || [])){
-    const unit = buyPrice(id);
+    /* A gold cost is a fee, not a purchase: it has a price of exactly one, and
+       no market to buy it from. Looking it up returned nothing, which dropped
+       the whole task — which is why all eleven Carpentry recipes vanished. */
+    const unit = id === GOLD_ID ? 1 : buyPrice(id);
     if (!unit) return null;                    // an unpriced input makes it fiction
+    const isFee = id === GOLD_ID;
     let q = qty;
-    if (m && m.cost)                q *= (1 + m.cost * frac);
-    if (smeltable && id !== COAL_ID) q *= (1 + m.oreOnly * frac);
-    if (potUsed && pot.saves(itemNameFor(id))) q *= (1 - pot.rate);
+    /* Material savings apply to materials. A gold fee is not one, so plank
+       bargain and farming trickery must not quietly zero it out. */
+    if (!isFee){
+      if (m && m.cost)                q *= (1 + m.cost * frac);
+      if (smeltable && id !== COAL_ID) q *= (1 + m.oreOnly * frac);
+      if (potUsed && pot.saves(itemNameFor(id))) q *= (1 - pot.rate);
+    }
     cost += unit * q;
-    parts.push({ id, qty, used:q, unit, vol: dailyVolume(id) });
+    /* Gold has no daily volume and must never bottleneck the rate. */
+    parts.push({ id, qty, used:q, unit, fee: isFee,
+                 vol: isFee ? Infinity : dailyVolume(id) });
   }
 
   const potCost = potUsed ? (seconds / pot.secs) * pot.unit : 0;
@@ -4399,6 +4469,7 @@ function planTask(t, skill){
   let byMarket = Math.floor(dailyVolume(t.out) / made) || 0;
   let scarce = { what: itemNameFor(t.out), vol: dailyVolume(t.out) };
   for (const p of parts){
+    if (p.fee) continue;                       // gold is not traded, so it never caps
     const cap = Math.floor(p.vol / p.used) || 0;
     if (cap < byMarket){ byMarket = cap; scarce = { what: itemNameFor(p.id), vol: p.vol }; }
   }
@@ -4472,8 +4543,10 @@ function renderSkillCards(){
         ${r.xp ? num(r.xp) + " xp" : "no xp"}</div>
 
       <div class="mats">${r.parts.length
-        ? r.parts.map(p => `<span class="mat">${num(p.qty)}× ${itemIcon(p.id)}${esc(itemNameFor(p.id))}
-            <b>${gold(p.unit)}</b></span>`).join("")
+        ? r.parts.map(p => p.fee
+            ? `<span class="mat">${gold(p.used)} fee</span>`
+            : `<span class="mat">${num(p.qty)}× ${itemIcon(p.id)}${esc(itemNameFor(p.id))}
+                <b>${gold(p.unit)}</b></span>`).join("")
         : '<span class="mat dim">no materials</span>'}</div>
 
       <div class="lines">
