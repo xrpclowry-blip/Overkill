@@ -76,8 +76,26 @@ if (merged.length > MAX_ROWS) merged = merged.slice(0, MAX_ROWS);
 
 console.log(`Added ${added} new, dropped ${dropped} past retention, ${merged.length} total`);
 
+/* An empty result means one of two things, and they need opposite handling.
+
+   If an archive already exists, this poll simply caught the feed at a moment
+   with none of our events in it — leave the file alone.
+
+   If no archive exists yet, write an empty but valid one. The very first run
+   will usually find nothing: Overkill's share of a 200-row global feed is
+   often zero. Exiting without writing left the workflow trying to commit a
+   file that was never created, which is exactly how it failed. */
 if (!merged.length){
-  console.log("Nothing to write — refusing to replace the archive with an empty file.");
+  if (kept.length){
+    console.log("Nothing new and nothing to lose — leaving the existing archive alone.");
+    process.exit(0);
+  }
+  await mkdir(dirname(OUT), { recursive: true });
+  await writeFile(OUT, JSON.stringify({
+    clan: CLAN, updatedAt: new Date().toISOString(),
+    oldest: null, newest: null, count: 0, levelUps: 0, drops: 0, events: []
+  }, null, 0) + "\n");
+  console.log(`No ${CLAN} events in this poll — wrote an empty archive to start from.`);
   process.exit(0);
 }
 
