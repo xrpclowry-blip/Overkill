@@ -39,6 +39,10 @@ jobs:
 
           # Stage first: on the very first run this file is untracked, and
           # `git diff` on the working tree cannot see untracked files.
+          if [ ! -f data/milestones.json ]; then
+            echo "The script wrote nothing this run; nothing to commit."
+            exit 0
+          fi
           git add -A data/milestones.json
 
           if git diff --cached --quiet; then
