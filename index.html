@@ -319,6 +319,14 @@ input[type="search"]{min-width:180px}
 .skbadge .nm{font-size:14px;font-weight:600}
 .skbadge .bt{font-size:12px;color:#3fc294;font-variant-numeric:tabular-nums}
 .skbadge .bt span{color:var(--text-muted)}
+/* Each badge carries its own percentage, so a member sets every skill from one
+   screen instead of opening them one at a time. */
+.skbadge .skpct{display:flex;align-items:center;gap:6px;margin-top:8px;
+  font-size:11.5px;color:var(--text-muted)}
+.skbadge .skpct input{width:54px;padding:3px 6px;text-align:right;font-size:12px;
+  background:var(--surface-1);color:var(--text-primary);border:1px solid var(--border);
+  border-radius:6px;font-family:var(--mono)}
+.skbadge .skpct .x{font-family:var(--mono);color:var(--accent)}
 .sicon.big{width:26px;height:26px}
 .skcards{display:grid;grid-template-columns:repeat(auto-fill,minmax(268px,1fr));gap:10px}
 .skcard{background:var(--surface-2);border:1px solid var(--border-soft);border-radius:10px;padding:12px 14px}
@@ -773,10 +781,15 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
       <h2>Skilling</h2>
       <p class="hint" id="skillHint">Loading…</p>
       <div class="controls">
-        <label class="capbar"><span id="skillSpeedLbl">Skilling speed</span>
+        <label class="capbar">Upgrades of
+          <select id="skillMember" title="Reads that member's real upgrade tiers — Plank Bargain, Smelting Magic and the rest — instead of assuming everyone has them maxed.">
+            <option value="">anyone (assume maxed)</option>
+          </select>
+        </label>
+        <label class="capbar" id="skillPctWrap" hidden><span id="skillSpeedLbl">Skilling speed</span>
           <span class="pctwrap"><input id="skillPct" type="number" min="0" max="80" step="1"
             value="75" inputmode="numeric"
-            title="Your skilling boost percentage, the number the game shows on your boosts screen. Tool + cape + jewellery + potion. Caps at 80%. Set it per skill — open a skill first and the box remembers that skill's number."><span class="pct">%</span></span>
+            title="The boost percentage the game shows on your skilling screen. Caps at 80%."><span class="pct">%</span></span>
           <span class="mult" id="skillMult">4.00× faster</span>
         </label>
         <label class="capbar">Rank by
@@ -4495,9 +4508,17 @@ function potionFor(skill){
   return unit ? Object.assign({}, p, { id: p._id, unit }) : null;
 }
 
+let skillMember = "";     // "" = no one picked, assume every upgrade maxed
+
+/* Upgrade tiers scale these bonuses, and they differ per member. Falling back
+   to the maximum flatters everyone who hasn't bought the upgrade yet, so the
+   picker exists to replace an assumption with a fact. */
 function modTier(m){
-  const p = (state.members || []).find(x => x.profile && x.profile.upgrades);
-  const held = p ? Number(p.profile.upgrades[m.key]) : NaN;
+  const who = skillMember
+    ? (state.members || []).find(x => x.name === skillMember)
+    : null;
+  const ups = who && who.profile ? who.profile.upgrades : null;
+  const held = ups ? Number(ups[m.key]) : NaN;
   return Number.isFinite(held) ? Math.min(held, m.max) : m.max;
 }
 
@@ -4608,30 +4629,43 @@ function skillRows(skill){
 }
 
 /* ---------------- badge grid ---------------- */
+/* The extractor finds ItemCreation alongside the real skills because the game
+   files group them together, but it is not a skill and it already has its own
+   panel in Market. Instant trading and hourly gold stay separate. */
+const NOT_A_SKILL = new Set(["ItemCreation"]);
+
 function renderSkillGrid(){
   const host = $("#skillBody");
-  const names = Object.keys(taskDoc.tasks).sort();
+  const names = Object.keys(taskDoc.tasks).filter(n => !NOT_A_SKILL.has(n)).sort();
   $("#skillHint").innerHTML =
     `Materials priced at what you'd <strong>pay</strong>, output at what you'd ` +
     `<strong>receive</strong>, after the 1% tax · rates capped by what the market ` +
     `actually trades · prices from ${ago(snapshotAge(skillPrices))} ago` +
     (snapshotAge(skillPrices) > STALE_HOURS
       ? ` <strong class="neg">— the hourly snapshot has stopped, so these are out of date</strong>` : "") +
-    `<br>Set <strong>skilling speed</strong> to the boost % your game shows. Open a skill first ` +
-    `and the box remembers that skill on its own — Smithing has no outfit, so it sits lower.`;
+    `<br>Put the boost <strong>%</strong> the game shows you into each badge — they differ per ` +
+    `skill, and Smithing has no outfit so it sits lower. ` +
+    (skillMember
+      ? `Upgrade tiers are ${esc(skillMember)}'s.`
+      : `Upgrade tiers are <strong>assumed maxed</strong> — pick a member above to use theirs.`);
 
   host.innerHTML = `<div class="skgrid">${names.map(n => {
     const byXp = skillRank === "xp";
     const rows = skillRows(n).filter(r => byXp ? r.xpHour != null : r.perDay != null);
     const best = rows.sort((a, b) => byXp ? b.xpHour - a.xpHour : b.perDay - a.perDay)[0];
-    return `<button class="skbadge" data-skill="${esc(n)}">
+    return `<div class="skbadge" data-skill="${esc(n)}" role="button" tabindex="0">
       ${skillIcon(n.toLowerCase(), "big")}
       <div class="nm">${esc(spaceCase(n))}</div>
       <div class="bt">${best
         ? (byXp ? `${abbr(best.xpHour)}<span> xp/hr · ${esc(taskName(best.name))}</span>`
                 : `${gold(best.perDay)}<span>/day · ${esc(taskName(best.name))}</span>`)
         : '<span class="dim">nothing priceable</span>'}</div>
-    </button>`;
+      <label class="skpct" title="The boost percentage the game shows for ${esc(spaceCase(n))}. Caps at 80%.">
+        <input type="number" min="0" max="80" step="1" data-pct="${esc(n)}"
+               value="${pctFor(n)}" inputmode="numeric"> %
+        <span class="x">${speedFor(n).toFixed(2)}×</span>
+      </label>
+    </div>`;
   }).join("")}</div>`;
 
 }
@@ -4703,6 +4737,8 @@ function syncSpeedUI(writeValue){
   if (writeValue && inp.value !== String(pct)) inp.value = String(pct);
   const lbl = $("#skillSpeedLbl");
   if (lbl) lbl.textContent = skillOpen ? `${spaceCase(skillOpen)} speed` : "Skilling speed";
+  const wrap = $("#skillPctWrap");
+  if (wrap) wrap.hidden = !skillOpen;          // on the grid, every badge has its own
   const box = $("#skillPotWrap"), pot = POTIONS[skillOpen];
   if (box){
     box.hidden = !pot;
@@ -4713,6 +4749,9 @@ function syncSpeedUI(writeValue){
     renderSkills();
   });
 
+  const who = $("#skillMember");
+  if (who) who.onchange = () => { skillMember = who.value; renderSkills(); };
+
   const cb = $("#skillPot"); if (cb) cb.checked = potionOn;
   }
   const mul = $("#skillMult");
@@ -4720,13 +4759,28 @@ function syncSpeedUI(writeValue){
     (pct >= PCT_CAP ? " · capped" : "");
 }
 
+/** Fill the picker once the clan load has produced members. */
+function fillSkillMembers(){
+  const sel = $("#skillMember");
+  if (!sel || !state.members || !state.members.length) return;
+  const have = new Set([...sel.options].map(o => o.value));
+  for (const m of state.members){
+    if (have.has(m.name)) continue;
+    const o = document.createElement("option");
+    o.value = o.textContent = m.name;
+    sel.appendChild(o);
+  }
+}
+
 function renderSkills(){
   const host = $("#skillBody"), hint = $("#skillHint");
   if (!host) return;
+  fillSkillMembers();
   const bar = $("#skillPct"); if (bar) bar.closest(".controls").hidden = !(taskDoc && skillPrices);
   if (!taskDoc){ hint.textContent = "No task data yet — the asset job writes data/tasks.json."; host.innerHTML = ""; return; }
   if (!skillPrices){ hint.textContent = "No price snapshot yet — the hourly job writes data/market/latest.json."; host.innerHTML = ""; return; }
-  if (skillOpen && taskDoc.tasks[skillOpen]) renderSkillCards(); else renderSkillGrid();
+  if (skillOpen && taskDoc.tasks[skillOpen] && !NOT_A_SKILL.has(skillOpen)) renderSkillCards();
+  else renderSkillGrid();
 }
 
 /** Open a skill (or "" for the grid) and point the speed box at it. */
@@ -4755,14 +4809,36 @@ function initSkills(){
     renderSkills();
   });
 
+  const who = $("#skillMember");
+  if (who) who.onchange = () => { skillMember = who.value; renderSkills(); };
+
   const cb = $("#skillPot");
   if (cb) cb.onchange = () => { potionOn = cb.checked; renderSkills(); syncSpeedUI(true); };
 
   /* Delegated, not per-render: blurring the % box re-renders, and a handler bound
      to the old node would be destroyed between mousedown and click. */
   $("#skillBody").addEventListener("click", e => {
+    if (e.target.closest(".skpct")) return;      // typing a percentage, not opening
     const b = e.target.closest(".skbadge");
     if (b) openSkill(b.dataset.skill);
+  });
+
+  /* Delegated so it survives the grid being redrawn on every keystroke. */
+  $("#skillBody").addEventListener("input", e => {
+    const box = e.target.closest("input[data-pct]");
+    if (!box) return;
+    const raw = box.value.trim();
+    if (raw === "") return;
+    let v = Math.round(Number(raw));
+    if (!Number.isFinite(v)) return;
+    v = Math.max(0, Math.min(PCT_CAP, v));
+    if (v === pctFor(box.dataset.pct)) return;
+    skillPct[box.dataset.pct] = v;
+    /* Redraw the numbers, but leave the box the reader is typing in alone. */
+    const focus = box.dataset.pct, caret = box.selectionStart;
+    renderSkills();
+    const again = $(`input[data-pct="${focus}"]`);
+    if (again){ again.focus(); try { again.setSelectionRange(caret, caret); } catch {} }
   });
   $("#skillHint").addEventListener("click", e => {
     if (e.target.closest("#skBack")){ e.preventDefault(); openSkill(""); }
