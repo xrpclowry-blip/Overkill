@@ -660,11 +660,10 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
           </select>
         </label>
         <label class="capbar">Offer slots
-          <select id="picksSlots">
-            <option value="6" selected>6 — one character, premium</option>
-            <option value="3">3 — one character, free</option>
-            <option value="18">18 — three characters, premium</option>
-            <option value="9">9 — three characters, free</option>
+          <select id="picksSlots" title="Six slots per character, free or premium.">
+            <option value="6" selected>6 — one character</option>
+            <option value="12">12 — two characters</option>
+            <option value="18">18 — three characters</option>
           </select>
         </label>
       </div>
@@ -1054,6 +1053,23 @@ const state = {
 };
 
 /* =====================================================================
+   Items that bind when you buy them
+   ---------------------------------------------------------------------
+   Premium permanent goes untradeable the moment you buy it, and making it
+   sellable again costs a flat 1,000,000 gold — every unit, every time.
+   The game even models this itself: premium_permanent (337) has a separate
+   premium_permanent_untradeable (551) sitting beside it in the item list.
+
+   Ignoring the fee made the flip finder read a 1M-a-unit loss as profit,
+   on an item whose spread is wide enough to look like the best trade on
+   the board. It is a cost of the trade, so it belongs in the cost.
+   ===================================================================== */
+const UNBIND_FEE = {
+  337: 1000000        // premium_permanent
+};
+const unbindFee = id => UNBIND_FEE[Number(id)] || 0;
+
+/* =====================================================================
    Item names and icons
    ---------------------------------------------------------------------
    /api/Items/metadata is not a complete list — it misses ids the market
@@ -1380,7 +1396,12 @@ async function loadAll(){
         await new Promise(r => setTimeout(r, 600));
         return await api(path, { optional:true });
       }
-    }, 4)
+    }, 4),
+    // Last, and deliberately not destructured: it populates state.itemNames as a
+    // side effect. Awaited here so every panel has names and icons on its FIRST
+    // paint — the full item list used to draw before the map landed, which is
+    // why its rows showed names with no icon beside them.
+    ensureItemNames()
   ]);
 
   state.items.clear();
@@ -3036,7 +3057,11 @@ async function loadMarket(){
   const candidates = [], rejects = [];
   for (const p of (Array.isArray(live) ? live : [])){
     const meta = byId.get(p.itemId);
-    const name = itemLabel(meta ? meta.name : "") || ("item #" + p.itemId);
+    /* itemNameFor also falls back to the committed name map, so an id the
+       live metadata endpoint has never heard of still reads as a name. */
+    const name = (typeof itemNameFor === "function")
+      ? itemNameFor(p.itemId)
+      : (itemLabel(meta ? meta.name : "") || ("item #" + p.itemId));
     const bid  = p.highestBuyPrice || 0;
     const ask  = p.lowestSellPrice || 0;
     const avg  = p.dailyAveragePrice || 0;
@@ -3059,9 +3084,10 @@ async function loadMarket(){
     // which is not a reason to discard an item that trades most weeks.
     const capped = avg ? Math.round(avg * MKT.FAIR_HEADROOM) : ask - 1;
     const listAt = Math.min(ask - 1, capped);
-    const profitPerUnit = listAt * (1 - MKT.TAX) - buyAt;
+    const bindFee = unbindFee(p.itemId);
+    const profitPerUnit = listAt * (1 - MKT.TAX) - buyAt - bindFee;
 
-    candidates.push({ ...base, buyAt, listAt, profitPerUnit,
+    candidates.push({ ...base, buyAt, listAt, profitPerUnit, bindFee,
       marginPct: buyAt ? profitPerUnit / buyAt * 100 : 0,
       rawSpread: (ask - bid) / bid,
       flagged: avg ? ask > avg * MKT.FANTASY : false });
@@ -3167,7 +3193,7 @@ function classify(){
       }
       const capped = Math.round(c.fair * MKT.FAIR_HEADROOM);
       c.listAt = Math.min(c.ask - 1, capped);
-      c.profitPerUnit = c.listAt * (1 - MKT.TAX) - c.buyAt;
+      c.profitPerUnit = c.listAt * (1 - MKT.TAX) - c.buyAt - (c.bindFee || 0);
       c.marginPct = c.buyAt ? c.profitPerUnit / c.buyAt * 100 : 0;
       if (c.profitPerUnit <= 0){
         rejects.push({ ...c, reason:`Listed at ${abbr(c.ask)} but only worth about ${abbr(c.fair)}`,
@@ -3218,7 +3244,9 @@ function sized(r){
 
 const MKT_COLS = [
   { key:"name",      label:"Item",        num:false, get:r => r.name,
-    cell:r => `${esc(r.name)}${r.flagged ? ' <span class="pill off" title="listed well above fair value">check</span>' : ""}` },
+    cell:r => `${itemIcon(r.id)}${esc(r.name)}` +
+      (r.bindFee ? ` <span class="pill mid" title="Binds when bought — ${num(r.bindFee)} gp per unit to make it tradeable again, already taken off the profit">bound</span>` : "") +
+      (r.flagged ? ' <span class="pill off" title="listed well above fair value">check</span>' : "") },
   { key:"buyAt",     label:"Buy at",      get:r => r.buyAt,        cell:r => num(r.buyAt) },
   { key:"listAt",    label:"List at",     get:r => r.listAt,       cell:r => num(r.listAt) },
   { key:"unit",      label:"Profit each", get:r => r.profitPerUnit,cell:r => `<span class="pos">${num(r.profitPerUnit)}</span>` },
@@ -3916,9 +3944,12 @@ function planTrade(id, r, gold){
   }
   if (sell <= buy) return null;
 
-  const net = sell * (1 - PICK.TAX) - buy;
+  /* The unbind fee is charged per unit on resale, so it comes straight off the
+     margin — and on premium permanent it is large enough to invert the trade. */
+  const bindFee = unbindFee(id);
+  const net = sell * (1 - PICK.TAX) - buy - bindFee;
   if (net <= 0) return null;
-  const margin = net / buy;
+  const margin = net / (buy + bindFee);
   if (margin < PICK.MIN_MARGIN) return null;
 
   const vol = Number(r.volPerDay) || 0;
@@ -3933,13 +3964,14 @@ function planTrade(id, r, gold){
        moves in a day, and say plainly that the wait is unknown until the
        hourly snapshots have watched orders like this fill. */
     const byFlow = Math.floor(vol * PICK.PATIENT_SHARE);
-    const byGold = Math.floor(gold / buy);
+    /* You need the unbind fee as well as the purchase price, so size on both. */
+    const byGold = Math.floor(gold / (buy + bindFee));
     qty = Math.max(0, Math.min(byFlow, byGold));
     limitedBy = byFlow <= byGold ? "flow" : "gold";
   } else {
     const perHour = (vol / 24) * PICK.FLOW_SHARE;
     const byFlow  = Math.floor((perHour * PICK.TARGET_HOURS) / 2);
-    const byGold  = Math.floor(gold / buy);
+    const byGold  = Math.floor(gold / (buy + bindFee));
     qty = Math.max(0, Math.min(byFlow, byGold));
     hours = perHour > 0 ? (2 * qty) / perHour : Infinity;
     limitedBy = byFlow <= byGold ? "flow" : "gold";
@@ -3947,13 +3979,13 @@ function planTrade(id, r, gold){
   if (qty < 1) return null;
 
   return {
-    id, buy, sell, net, margin, qty, vol, anchor, patient,
+    id, buy, sell, net, margin, qty, vol, anchor, patient, bindFee,
     farFromTraded: anchor ? buy < anchor * 0.75 : false,
     profit: qty * net,
     hours,
     limitedBy,
     bidHeldH: r.bidHeldH, askHeldH: r.askHeldH, moves24: r.moves24 || 0,
-    spend: qty * buy
+    spend: qty * (buy + bindFee)
   };
 }
 
@@ -4065,6 +4097,9 @@ function renderPicks(){
         Buy <b>${num(p.qty)} ${itemIcon(p.id)}${esc(itemNameFor(p.id))}</b> at <span class="buy">${num(p.buy)}</span>,
         then sell them at <span class="sell">${num(p.sell)}</span>.
       </div>
+      ${p.bindFee ? `<div class="gain dim">Each one binds when you buy it —
+        ${gold(p.bindFee)} per unit to make it tradeable again, already taken off
+        the profit below.</div>` : ""}
       <div class="gain">Profit <b>${gold(p.profit)}</b> on ${gold(p.spend)} tied up
         — ${pct(p.margin)} a unit${p.hours == null ? ""
           : `, roughly ${p.hours < 1 ? "under an hour" : Math.round(p.hours) + " hours"}`}.</div>
