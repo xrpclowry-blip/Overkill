@@ -2444,6 +2444,9 @@ function renderAll(){
   // Item names arrive with the clan load, after the picks panel has already
   // drawn itself from the snapshot file. Redraw so "item #101" becomes a name.
   if (typeof renderPicks === "function" && typeof picksDoc !== "undefined" && picksDoc) renderPicks();
+  // Skilling draws from its own files and usually wins the race, so it has no
+  // member list and no upgrade tiers on first paint. Redraw once they exist.
+  if (typeof renderSkills === "function" && typeof taskDoc !== "undefined" && taskDoc) renderSkills();
   const sel = $("#logMember"), cur = sel.value;
   sel.innerHTML = '<option value="">All members</option>' +
     state.members.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join("");
@@ -4447,6 +4450,33 @@ let skillOpen = "";          // "" = the badge grid
 const PCT_CAP = 80;
 let skillPct = { _default: 75 };   // per-skill overrides live alongside _default
 
+/* Kept in the browser, because a member who has to retype ten percentages on
+   every visit will stop doing it and the numbers quietly go wrong. It lives on
+   one device and reaches nobody else — private browsing, cleared site data or a
+   different machine all start fresh, which is why every read and write is
+   wrapped: a failure here must never take the page down with it. */
+const PCT_STORE = "ovk.skilling.v1";
+
+function loadSkillPrefs(){
+  try {
+    const raw = localStorage.getItem(PCT_STORE);
+    if (!raw) return;
+    const doc = JSON.parse(raw);
+    if (doc && doc.pct && typeof doc.pct === "object") skillPct = doc.pct;
+    if (typeof doc.member === "string") skillMember = doc.member;
+    if (typeof doc.rank === "string") skillRank = doc.rank;
+    if (typeof doc.potion === "boolean") potionOn = doc.potion;
+  } catch { /* no storage, or it holds something we didn't write */ }
+}
+
+function saveSkillPrefs(){
+  try {
+    localStorage.setItem(PCT_STORE, JSON.stringify({
+      pct: skillPct, member: skillMember, rank: skillRank, potion: potionOn
+    }));
+  } catch { /* full, blocked, or private — the session still works */ }
+}
+
 const pctFor   = s => Math.max(0, Math.min(PCT_CAP,
   (s && skillPct[s] != null) ? skillPct[s] : skillPct._default));
 const speedFor = s => 1 / (1 - pctFor(s) / 100);
@@ -4746,11 +4776,12 @@ function syncSpeedUI(writeValue){
     $$("#skillRank button").forEach(btn => btn.onclick = () => {
     skillRank = btn.dataset.rank;
     $$("#skillRank button").forEach(x => x.setAttribute("aria-pressed", String(x === btn)));
+    saveSkillPrefs();
     renderSkills();
   });
 
   const who = $("#skillMember");
-  if (who) who.onchange = () => { skillMember = who.value; renderSkills(); };
+  if (who) who.onchange = () => { skillMember = who.value; saveSkillPrefs(); renderSkills(); };
 
   const cb = $("#skillPot"); if (cb) cb.checked = potionOn;
   }
@@ -4770,6 +4801,9 @@ function fillSkillMembers(){
     o.value = o.textContent = m.name;
     sel.appendChild(o);
   }
+  /* The saved name can only be selected once the option for it exists. */
+  if (skillMember && sel.value !== skillMember) sel.value = skillMember;
+  if (skillMember && sel.value !== skillMember) skillMember = "";   // they left the clan
 }
 
 function renderSkills(){
@@ -4788,6 +4822,10 @@ function openSkill(name){ skillOpen = name; renderSkills(); syncSpeedUI(true); }
 
 function initSkills(){
   if (!$("#skillBody")) return;
+  loadSkillPrefs();
+  $$("#skillRank button").forEach(x =>
+    x.setAttribute("aria-pressed", String(x.dataset.rank === skillRank)));
+  const potBox = $("#skillPot"); if (potBox) potBox.checked = potionOn;
   const inp = $("#skillPct");
   if (inp){
     const apply = () => {
@@ -4798,6 +4836,7 @@ function initSkills(){
       v = Math.max(0, Math.min(PCT_CAP, v));
       if (v === pctFor(skillOpen)) return;          // nothing moved, don't re-render
       if (skillOpen) skillPct[skillOpen] = v; else skillPct._default = v;
+      saveSkillPrefs();
       renderSkills(); syncSpeedUI(false);
     };
     inp.oninput  = apply;
@@ -4806,14 +4845,15 @@ function initSkills(){
   $$("#skillRank button").forEach(btn => btn.onclick = () => {
     skillRank = btn.dataset.rank;
     $$("#skillRank button").forEach(x => x.setAttribute("aria-pressed", String(x === btn)));
+    saveSkillPrefs();
     renderSkills();
   });
 
   const who = $("#skillMember");
-  if (who) who.onchange = () => { skillMember = who.value; renderSkills(); };
+  if (who) who.onchange = () => { skillMember = who.value; saveSkillPrefs(); renderSkills(); };
 
   const cb = $("#skillPot");
-  if (cb) cb.onchange = () => { potionOn = cb.checked; renderSkills(); syncSpeedUI(true); };
+  if (cb) cb.onchange = () => { potionOn = cb.checked; saveSkillPrefs(); renderSkills(); syncSpeedUI(true); };
 
   /* Delegated, not per-render: blurring the % box re-renders, and a handler bound
      to the old node would be destroyed between mousedown and click. */
@@ -4834,6 +4874,7 @@ function initSkills(){
     v = Math.max(0, Math.min(PCT_CAP, v));
     if (v === pctFor(box.dataset.pct)) return;
     skillPct[box.dataset.pct] = v;
+    saveSkillPrefs();
     /* Redraw the numbers, but leave the box the reader is typing in alone. */
     const focus = box.dataset.pct, caret = box.selectionStart;
     renderSkills();
