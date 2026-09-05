@@ -316,56 +316,23 @@ async function extractStats(game){
   const kb = (JSON.stringify(out).length / 1024).toFixed(0);
   console.log(`  wrote data/item-stats.json — ${withStats} items with bonuses, ~${kb}KB`);
 
-  /* ---- diagnostic, not a feature ----------------------------------------
-     Question being answered: does the game store a per-item SKILLING speed
-     bonus anywhere? This extractor has only ever looked for combat bonuses,
-     so if a skilling field exists we have never seen it. Print the distinct
-     numeric field names that could plausibly be one, with how many items
-     carry them and one example each.
-
-     If something like "skillingSpeedBonus" shows up, a member's skilling
-     percentage can be computed from the gear they are wearing. If nothing
-     shows up, it stays a number they type, and this block can be deleted. */
-  const candidates = new Map();
+  /* Ritual power is NOT a plain number on the item: a value search for the
+     figures on the in-game cards (390,888 on the Otherworldly rod, 499 on the
+     Potion of forgery) found no field holding them. But the item schema has an
+     InvocationData member, which a numeric scan cannot see because it is a
+     nested object. Dump it for a few items that definitely have an RP value. */
+  const RP_PROBE = [/^otherworldly_fishing_rod$/, /^godlike_fishing_rod$/,
+                    /^refined_fishing_rod$/, /^potion_of_forgery$/,
+                    /^otherworldly_hatchet$/];
+  let rpShown = 0;
   for (const raw of items){
     const m = lower(raw);
-    const nm = m.get("name") || m.get("namelockey") || "?";
-    for (const [k, v] of m){
-      if (!/skill|speed|boost|gather|efficien|haste|yield|double/i.test(k)) continue;
-      if (!Number.isFinite(Number(v)) || Number(v) === 0) continue;
-      if (!candidates.has(k)) candidates.set(k, { n: 0, eg: `${nm} = ${v}` });
-      candidates.get(k).n++;
-    }
+    const nm = norm(String(m.get("name") || m.get("namelockey") || "")).replace(/ /g, "_");
+    if (!RP_PROBE.some(re => re.test(nm))) continue;
+    rpShown++;
+    console.log(`  InvocationData on ${nm}: ${JSON.stringify(m.get("invocationdata"))}`);
   }
-  if (candidates.size){
-    console.log("  possible skilling-bonus fields:");
-    for (const [k, { n, eg }] of [...candidates].sort((a, b) => b[1].n - a[1].n).slice(0, 20))
-      console.log(`    ${k} — ${n} item(s), e.g. ${eg}`);
-  } else {
-    console.log("  no skilling-bonus field found by name");
-  }
-
-  /* Guessing field names only finds fields I guessed right. The tool's 25% and
-     the cape's 20% did not show up, so dump EVERY numeric and boolean field on
-     a handful of items known to carry them. If 25 and 20 are in the data at
-     all, they are in this output; if they are not, the game derives them from
-     tier and no amount of reading items will produce them. */
-  const PROBE = [/^otherworldly_(hatchet|pickaxe|saw|harpoon|sickle|tinderbox|needle)/i,
-                 /completionist.*cape|cape.*completionist/i,
-                 /_enchanted$/i];
-  const shown = new Set();
-  for (const raw of items){
-    const m = lower(raw);
-    const nm = String(m.get("name") || m.get("namelockey") || "");
-    const hit = PROBE.find(re => re.test(nm));
-    if (!hit || shown.has(String(hit))) continue;
-    shown.add(String(hit));
-    const fields = [...m].filter(([, v]) =>
-      (typeof v === "number" || typeof v === "boolean") && v !== 0 && v !== false);
-    console.log(`  every field on ${nm}:`);
-    console.log("    " + fields.map(([k, v]) => `${k}=${v}`).join(", "));
-  }
-  if (!shown.size) console.log("  probe matched no items — name patterns need adjusting");
+  if (!rpShown) console.log("  RP probe matched no items by name");
 
   /* ---- where is ritual power stored? -------------------------------------
      Guessing field names has a poor record here, so search by VALUE instead.
@@ -398,53 +365,6 @@ async function extractStats(game){
   for (const line of rpHits) console.log(`    ${line}`);
   if (!rpHits.length) console.log("    none of the four probe items were found by name");
 
-  /* ---- diagnostic: what would an achievement board group together? --------
-     Gear follows three different naming schemes — the tool ladder (refined,
-     great, elite...), the smithing ladder (metals), and one-off uniques. The
-     proposed rule is "family = the item name with its leading word dropped,
-     ordered within the family by level requirement". Print what that actually
-     produces for equippable items so the grouping can be judged before any
-     board is built on it. Families of one are almost certainly uniques. */
-  const fam = new Map();
-  for (const item of list){
-    const slot = slotOf(item);
-    if (slot == null || String(slot).toLowerCase() === "none" || String(slot) === "-1") continue;
-    const nm = String(item.name ?? item.Name ?? "");
-    if (!nm) continue;
-    const parts = norm(nm).split(" ");
-    const key = parts.length > 1 ? parts.slice(1).join(" ") : parts[0];
-    if (!fam.has(key)) fam.set(key, []);
-    fam.get(key).push({
-      nm,
-      lvl:  Number(item.levelRequirement ?? item.levelrequirement ?? 0) || 0,
-      skill: item.associatedSkill ?? item.associatedskill ?? null,
-      slot
-    });
-  }
-  const groups = [...fam].sort((a, b) => b[1].length - a[1].length);
-  const many = groups.filter(([, v]) => v.length > 1);
-  console.log(`  achievement grouping: ${groups.length} families from ${
-    groups.reduce((n, [, v]) => n + v.length, 0)} equippable items ` +
-    `(${many.length} with more than one tier, ${groups.length - many.length} singletons)`);
-  for (const [key, v] of many.slice(0, 12)){
-    const ordered = v.sort((a, b) => a.lvl - b.lvl).map(x => `${x.nm}(${x.lvl})`);
-    const skills = [...new Set(v.map(x => x.skill).filter(x => x != null))];
-    const slots  = [...new Set(v.map(x => x.slot))];
-    console.log(`    ${key} [skill ${skills.join("/") || "-"}, slot ${slots.join("/")}]: ${ordered.join(" < ")}`);
-  }
-
-  /* If associatedSkill + equipmentSlot already partition gear sensibly, that is
-     a far better family key than anything derived from the name. */
-  const bySlotSkill = new Map();
-  for (const [, v] of fam) for (const it of v){
-    const k = `slot ${it.slot} / skill ${it.skill ?? "-"}`;
-    bySlotSkill.set(k, (bySlotSkill.get(k) || 0) + 1);
-  }
-  console.log(`  by slot+skill instead: ${bySlotSkill.size} groups; largest —`);
-  for (const [k, n] of [...bySlotSkill].sort((a, b) => b[1] - a[1]).slice(0, 8))
-    console.log(`    ${k}: ${n} items`);
-  console.log("    singleton examples: " +
-    groups.filter(([, v]) => v.length === 1).slice(0, 12).map(([k]) => k).join(", "));
 
   return withStats;
 }
