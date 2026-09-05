@@ -146,6 +146,13 @@ tbody td:first-child{color:var(--text-primary);font-weight:500}
 .wr.t10k {color:#3fc294}
 .wr.trest{color:var(--text-muted)}
 .pill.mid{background:#c9850022;color:#e0a52e;border-color:#c9850055}
+/* Order-flow read. Green where a resting order fills, amber where it needs
+   watching, grey where the quotes are decoration. */
+.pill.flow-stable {background:#199e7022;color:#3fc294;border-color:#199e7055}
+.pill.flow-hitting{background:#199e7022;color:#3fc294;border-color:#199e7055}
+.pill.flow-lifting{background:#c9850022;color:#e0a52e;border-color:#c9850055}
+.pill.flow-dead   {background:#ffffff0d;color:var(--text-muted);border-color:var(--border)}
+.flow-note{margin:-8px 0 12px;font-style:italic}
 .pill.off{background:#ffffff0d;color:var(--text-muted);border-color:var(--border)}
 .pos{color:#3fc294}
 .neg{color:#f08a8a}
@@ -640,6 +647,8 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
 
     <!-- The answer first. Everything below this is for people who want to argue
          with it; most members should never need to scroll past this panel. -->
+    <p class="hint banner warn" id="snapWarn" hidden
+       style="display:block;margin:0 0 12px;font-size:12.5px"></p>
     <div class="panel" id="picksPanel">
       <h2>What to trade right now</h2>
       <p class="hint" id="picksHint">Reading the last market snapshot…</p>
@@ -769,6 +778,12 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
             value="75" inputmode="numeric"
             title="Your skilling boost percentage, the number the game shows on your boosts screen. Tool + cape + jewellery + potion. Caps at 80%. Set it per skill — open a skill first and the box remembers that skill's number."><span class="pct">%</span></span>
           <span class="mult" id="skillMult">4.00× faster</span>
+        </label>
+        <label class="capbar">Rank by
+          <span class="seg" id="skillRank">
+            <button data-rank="gold" aria-pressed="true">Gold</button>
+            <button data-rank="xp" aria-pressed="false">XP</button>
+          </span>
         </label>
         <label class="capbar" id="skillPotWrap" hidden>
           <input type="checkbox" id="skillPot" checked>
@@ -1114,6 +1129,14 @@ function positionSize({ vol, gold, buyPrice, sellPrice, quick }){
    anything per-item.
    ===================================================================== */
 const SNAPSHOT_URL = "./data/market/latest.json";
+
+/* The read is hourly by design, so "old" cannot mean minutes. Past three hours
+   the workflow has missed a run and something is wrong — that is the only
+   staleness worth interrupting someone about. */
+const STALE_HOURS = 3;
+const snapshotAge = doc => doc && doc.capturedAt
+  ? (Date.now() - new Date(doc.capturedAt).getTime()) / 3600000 : null;
+
 let snapshotPromise = null;
 function ensureSnapshot(){
   if (snapshotPromise) return snapshotPromise;
@@ -1122,6 +1145,71 @@ function ensureSnapshot(){
     .catch(() => null)
     .then(doc => (doc && doc.items) ? doc : null);
   return snapshotPromise;
+}
+
+/* =====================================================================
+   Which side of the book is actually trading
+   ---------------------------------------------------------------------
+   The API reports the board as it stands; it has never reported who is
+   hitting whom. But the hourly snapshots record how long each quote has
+   held, and the daily volume says whether anything is trading at all.
+   Put those together and the flow becomes readable:
+
+     bid stands, ask keeps moving, units trade
+       -> sellers are repricing and buyers are lifting asks. A sell offer
+          fills; a buy offer waits.
+     ask stands, bid keeps moving, units trade
+       -> buyers are leapfrogging and sellers are hitting bids. A buy
+          offer fills, but expect to be outbid.
+     both stand, units still trade
+       -> a spread being harvested at fixed prices. The good case.
+     both stand, nothing trades
+       -> the quotes are decoration.
+
+   One confound, stated rather than hidden: a bid price can also stand
+   because the queue behind it is deep enough to absorb trades without
+   the price moving. Depth tells those apart, so it is used when the
+   snapshot carries it.
+
+   Quote age cannot exceed the number of snapshots taken, so this stays
+   silent until there is enough history to mean anything.
+   ===================================================================== */
+const FLOW_STANDS = 6;    // hours before a quote counts as standing
+const FLOW_MOVES  = 2;    // hours below which it counts as restless
+const FLOW_TRADES = 20;   // units a day before "it trades" is a fair thing to say
+
+function orderFlow(r){
+  if (!r) return null;
+  const bid = Number(r.bidHeldH), ask = Number(r.askHeldH);
+  if (!Number.isFinite(bid) || !Number.isFinite(ask)) return null;
+
+  const vol     = Number(r.volPerDay) || 0;
+  const trades  = vol >= FLOW_TRADES;
+  const bidSits = bid >= FLOW_STANDS, askSits = ask >= FLOW_STANDS;
+  const bidRuns = bid <= FLOW_MOVES,  askRuns = ask <= FLOW_MOVES;
+
+  /* A bid wall worth more than a day's trade can hold its price on its own. */
+  const deep = Number(r.bidQty) > 0 && vol > 0 && Number(r.bidQty) >= vol;
+
+  if (bidSits && askSits && !trades)
+    return { key:"dead", pill:"no trade",
+      note:`Both quotes have stood ${bid}h and ${ask}h with almost nothing trading — these are decoration, not prices.` };
+
+  if (bidSits && askSits && trades)
+    return { key:"stable", pill:"stable",
+      note:`Both quotes have held ${bid}h and ${ask}h while it kept trading — a spread being harvested at fixed prices.` };
+
+  if (bidSits && askRuns && trades)
+    return { key:"lifting", pill:"buyers lifting",
+      note:`The bid has stood ${bid}h while the ask keeps being reset and units keep trading` +
+           (deep ? ", though the bid queue is deep enough to hold its price on its own" : "") +
+           ` — buyers are crossing the spread, so a sell offer fills and a buy offer waits.` };
+
+  if (askSits && bidRuns && trades)
+    return { key:"hitting", pill:"bids hit",
+      note:`The ask has stood ${ask}h while the bid keeps being reset — buyers are leapfrogging each other and sellers are taking their bids, so a buy offer fills but expect to be outbid.` };
+
+  return null;   // nothing confident to say
 }
 
 /* =====================================================================
@@ -3234,6 +3322,7 @@ async function applySnapshot(m){
       c.traded  = Number(r.daysTraded) || 0;
       c.relPct  = Math.round(c.traded / c.tracked * 100);
     }
+    c.flow = orderFlow(r);
     c.fromSnapshot = true;
     filled++;
   }
@@ -3373,6 +3462,7 @@ const MKT_COLS = [
   { key:"name",      label:"Item",        num:false, get:r => r.name,
     cell:r => `${itemIcon(r.id)}${esc(r.name)}` +
       (r.bindFee ? ` <span class="pill mid" title="Binds when bought — ${num(r.bindFee)} gp per unit to make it tradeable again, already taken off the profit">bound</span>` : "") +
+      (r.flow ? ` <span class="pill flow-${r.flow.key}" title="${esc(r.flow.note)}">${esc(r.flow.pill)}</span>` : "") +
       (r.flagged ? ' <span class="pill off" title="listed well above fair value">check</span>' : "") },
   { key:"buyAt",     label:"Buy at",      get:r => r.buyAt,        cell:r => num(r.buyAt) },
   { key:"listAt",    label:"List at",     get:r => r.listAt,       cell:r => num(r.listAt) },
@@ -3519,6 +3609,7 @@ async function showMarketItem(id, quiet){
     <h2>${esc(r.name)}</h2>
     <p class="hint">${reliabilityWords(r.relPct)} · ${abbr(r.volPerDay)} traded a day ·
       about ${abbr(r.turnover)} of gold moves through it daily</p>
+    ${r.flow ? `<p class="hint flow-note">${esc(r.flow.note)}</p>` : ""}
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(230px,1fr))">
       <div>
         <div class="tile" style="background:var(--surface-2)">
@@ -4099,6 +4190,7 @@ function planTrade(id, r, gold){
     hours,
     limitedBy,
     bidHeldH: r.bidHeldH, askHeldH: r.askHeldH, moves24: r.moves24 || 0,
+    flow: orderFlow(r),
     spend: qty * (buy + bindFee)
   };
 }
@@ -4127,11 +4219,11 @@ function pickWhy(p){
     // Being best bid is a lease, not a freehold.
     bits.push("expect to be outbid by a gold and to re-post — that's the cost of the faster fill");
   }
-  if (p.bidHeldH != null && p.bidHeldH >= 3){
-    bits.push(`the buy side has held for ${p.bidHeldH}h`);
-  } else if (p.bidHeldH != null && p.moves24 >= 12){
-    bits.push("prices move around a lot, so check before committing");
-  }
+  /* The order-flow read supersedes the raw hold time — it says what the hold
+     time means rather than quoting it. */
+  if (p.flow) bits.push(p.flow.note.replace(/\.$/, ""));
+  else if (p.bidHeldH != null && p.bidHeldH >= 3) bits.push(`the buy side has held for ${p.bidHeldH}h`);
+  else if (p.bidHeldH != null && p.moves24 >= 12) bits.push("prices move around a lot, so check before committing");
   return bits.join(" · ");
 }
 
@@ -4146,8 +4238,19 @@ function renderPicks(){
   }
   $("#picksControls").hidden = false;
 
-  const age = (Date.now() - new Date(picksDoc.capturedAt).getTime()) / 3600000;
-  const stale = age > 3;
+  const age = snapshotAge(picksDoc);
+  const stale = age > STALE_HOURS;
+
+  /* Hourly is normal; hours late is a failed workflow. Say which, once, loudly,
+     rather than letting every number on the page quietly drift. */
+  const warn = $("#snapWarn");
+  if (warn){
+    warn.hidden = !stale;
+    if (stale) warn.innerHTML =
+      `<strong>These prices are ${esc(ago(age))} old.</strong> The hourly snapshot runs every ` +
+      `hour, so this means the workflow has failed or been disabled — check the Actions tab ` +
+      `before acting on anything below.`;
+  }
   hint.innerHTML =
     `Prices from ${stale ? '<span class="stale">' : ""}${ago(age)} ago${stale ? "</span>" : ""} · ` +
     `${num(picksDoc.counts ? picksDoc.counts.twoSided : 0)} items have both a buyer and a seller · ` +
@@ -4335,6 +4438,10 @@ const pctFor   = s => Math.max(0, Math.min(PCT_CAP,
   (s && skillPct[s] != null) ? skillPct[s] : skillPct._default));
 const speedFor = s => 1 / (1 - pctFor(s) / 100);
 
+/* Gold per xp is often a fraction — 414 gold over 900 xp is 0.46, and rounding
+   that to "0 gp" hides the whole point of the number. */
+const perXp = n => (n < 10 ? `${n.toFixed(2).replace(/0$/, "")} gp` : gold(n));
+
 /** "coal_ore" -> "Coal ore" */
 const taskName = raw => {
   const t = String(raw || "").replace(/_/g, " ").trim();
@@ -4369,6 +4476,7 @@ const POTIONS = {
   }
 };
 let potionOn = true;
+let skillRank = "gold";        // "gold" or "xp"
 
 /** Resolve the potion's item id by name once, then price it like any input. */
 function potionFor(skill){
@@ -4484,6 +4592,13 @@ function planTask(t, skill){
     limited: byMarket < byClock ? "market" : "time",
     scarce,
     xpDay: (actions === Infinity || !t.xp) ? null : actions * t.xp,
+
+    /* XP per hour is a CLOCK rate, not a market one: if you already hold the
+       materials, or gathered them yourself, the market cap has nothing to do
+       with how fast you level. Gold per xp is the other half — positive means
+       the levels pay for themselves, negative is what they cost you. */
+    xpHour:  (instant || !t.xp) ? null : (3600 / seconds) * t.xp,
+    gpPerXp: t.xp ? perAction / t.xp : null,
     modWhy: (m && frac > 0) ? m.why : null
   };
 }
@@ -4499,18 +4614,22 @@ function renderSkillGrid(){
   $("#skillHint").innerHTML =
     `Materials priced at what you'd <strong>pay</strong>, output at what you'd ` +
     `<strong>receive</strong>, after the 1% tax · rates capped by what the market ` +
-    `actually trades · prices from ${ago((Date.now() - new Date(skillPrices.capturedAt).getTime())/3600000)} ago` +
+    `actually trades · prices from ${ago(snapshotAge(skillPrices))} ago` +
+    (snapshotAge(skillPrices) > STALE_HOURS
+      ? ` <strong class="neg">— the hourly snapshot has stopped, so these are out of date</strong>` : "") +
     `<br>Set <strong>skilling speed</strong> to the boost % your game shows. Open a skill first ` +
     `and the box remembers that skill on its own — Smithing has no outfit, so it sits lower.`;
 
   host.innerHTML = `<div class="skgrid">${names.map(n => {
-    const rows = skillRows(n).filter(r => r.perDay != null);
-    const best = rows.sort((a, b) => b.perDay - a.perDay)[0];
+    const byXp = skillRank === "xp";
+    const rows = skillRows(n).filter(r => byXp ? r.xpHour != null : r.perDay != null);
+    const best = rows.sort((a, b) => byXp ? b.xpHour - a.xpHour : b.perDay - a.perDay)[0];
     return `<button class="skbadge" data-skill="${esc(n)}">
       ${skillIcon(n.toLowerCase(), "big")}
       <div class="nm">${esc(spaceCase(n))}</div>
       <div class="bt">${best
-        ? `${gold(best.perDay)}<span>/day · ${esc(taskName(best.name))}</span>`
+        ? (byXp ? `${abbr(best.xpHour)}<span> xp/hr · ${esc(taskName(best.name))}</span>`
+                : `${gold(best.perDay)}<span>/day · ${esc(taskName(best.name))}</span>`)
         : '<span class="dim">nothing priceable</span>'}</div>
     </button>`;
   }).join("")}</div>`;
@@ -4529,7 +4648,8 @@ function renderSkillCards(){
     (mod ? ` · ${esc(mod.modWhy)}` : "") +
     (rows.some(r => r.potUsed) ? ` · ${esc(rows.find(r => r.potUsed).potWhy)}` : "");
 
-  rows.sort((a, b) => (b.perDay ?? b.perAction) - (a.perDay ?? a.perAction));
+  const rank = r => skillRank === "xp" ? (r.xpHour ?? -1) : (r.perDay ?? r.perAction);
+  rows.sort((a, b) => rank(b) - rank(a));
 
   host.innerHTML = rows.length ? `<div class="skcards">${rows.map(r => {
     const loss = r.perAction <= 0;
@@ -4540,7 +4660,7 @@ function renderSkillCards(){
       </div>
       <div class="sub">${r.instant ? "instant" : r.seconds.toFixed(1) + "s"} ·
         makes ${r.made % 1 ? r.made.toFixed(1) : num(r.made)} ·
-        ${r.xp ? num(r.xp) + " xp" : "no xp"}</div>
+        ${r.xp ? num(r.xp) + " xp" : "no xp"}${r.xpHour ? ` · ${abbr(r.xpHour)} xp/hr` : ""}</div>
 
       <div class="mats">${r.parts.length
         ? r.parts.map(p => p.fee
@@ -4557,6 +4677,8 @@ function renderSkillCards(){
           <b class="${loss ? "neg" : "pos"}">${loss ? "−" : ""}${gold(Math.abs(r.perAction))}</b></div>
         ${r.perDay != null ? `<div class="big"><span>Per day</span>
           <b class="${r.perDay < 0 ? "neg" : "pos"}">${r.perDay < 0 ? "−" : ""}${gold(Math.abs(r.perDay))}</b></div>` : ""}
+        ${r.gpPerXp != null ? `<div><span>${r.gpPerXp < 0 ? "Costs per xp" : "Earns per xp"}</span>
+          <b class="${r.gpPerXp < 0 ? "neg" : "pos"}">${perXp(Math.abs(r.gpPerXp))}</b></div>` : ""}
       </div>
 
       <div class="cap">${loss
@@ -4585,7 +4707,13 @@ function syncSpeedUI(writeValue){
   if (box){
     box.hidden = !pot;
     if (pot) $("#skillPotLbl").textContent = pot.label;
-    const cb = $("#skillPot"); if (cb) cb.checked = potionOn;
+    $$("#skillRank button").forEach(btn => btn.onclick = () => {
+    skillRank = btn.dataset.rank;
+    $$("#skillRank button").forEach(x => x.setAttribute("aria-pressed", String(x === btn)));
+    renderSkills();
+  });
+
+  const cb = $("#skillPot"); if (cb) cb.checked = potionOn;
   }
   const mul = $("#skillMult");
   if (mul) mul.textContent = `${speedFor(skillOpen).toFixed(2)}× faster` +
@@ -4621,6 +4749,12 @@ function initSkills(){
     inp.oninput  = apply;
     inp.onchange = () => { apply(); syncSpeedUI(true); };   // clamp on blur/enter
   }
+  $$("#skillRank button").forEach(btn => btn.onclick = () => {
+    skillRank = btn.dataset.rank;
+    $$("#skillRank button").forEach(x => x.setAttribute("aria-pressed", String(x === btn)));
+    renderSkills();
+  });
+
   const cb = $("#skillPot");
   if (cb) cb.onchange = () => { potionOn = cb.checked; renderSkills(); syncSpeedUI(true); };
 
