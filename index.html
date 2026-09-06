@@ -806,6 +806,13 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
             title="The boost percentage the game shows on your skilling screen. Caps at 80%."><span class="pct">%</span></span>
           <span class="mult" id="skillMult">4.00× faster</span>
         </label>
+        <label class="capbar" title="House plus clan house, as your boosts screen shows them. The 5% listed there for gathering is speed, not experience — that one belongs in the skilling speed box.">XP boost
+          <span class="pctwrap"><input id="skillXpBoost" type="number" min="0" max="300" step="1"
+            value="55" inputmode="numeric"><span class="pct">%</span></span>
+        </label>
+        <label class="capbar" title="A flat 30% while a daily boost is running. They come in 120-minute blocks, so this is off unless you say otherwise.">
+          <input type="checkbox" id="skillDaily"> Daily boost
+        </label>
         <label class="capbar">Rank by
           <span class="seg" id="skillRank">
             <button data-rank="gold" aria-pressed="true">Gold</button>
@@ -4582,13 +4589,16 @@ function loadSkillPrefs(){
     if (typeof doc.member === "string") skillMember = doc.member;
     if (typeof doc.rank === "string") skillRank = doc.rank;
     if (typeof doc.potion === "boolean") potionOn = doc.potion;
+    if (Number.isFinite(Number(doc.xpBoost))) xpBoost = Number(doc.xpBoost);
+    if (typeof doc.daily === "boolean") dailyBoost = doc.daily;
   } catch { /* no storage, or it holds something we didn't write */ }
 }
 
 function saveSkillPrefs(){
   try {
     localStorage.setItem(PCT_STORE, JSON.stringify({
-      pct: skillPct, member: skillMember, rank: skillRank, potion: potionOn
+      pct: skillPct, member: skillMember, rank: skillRank, potion: potionOn,
+      xpBoost, daily: dailyBoost
     }));
   } catch { /* full, blocked, or private — the session still works */ }
 }
@@ -4611,8 +4621,16 @@ const taskName = raw => {
    tier as the game states them, scaled by the tier a member actually holds. */
 const COAL_ID = 31;
 const MODS = {
-  Fishing:     { key:"theFisherman",    max:5, out:  +1.0, why:"The fisherman doubles your catch" },
-  Woodcutting: { key:"theLumberjack",   max:5, out:  +1.0, why:"The lumberjack doubles your logs" },
+  Fishing:     { key:"theFisherman",    max:5, out:  +1.0, why:"The fisherman doubles your catch",
+                 /* Rate assumed to match the lumberjack's 25%, on the strength of
+                    Chris's bug report that both behave identically. If the
+                    fisherman's tooltip says otherwise this is the one number to
+                    change. */
+                 extraXp:{ key:"betterFisherman", rate:0.25,
+                           why:"Better fisherman pays 25% experience on the extra catch" } },
+  Woodcutting: { key:"theLumberjack",   max:5, out:  +1.0, why:"The lumberjack doubles your logs",
+                 extraXp:{ key:"betterLumberjack", rate:0.25,
+                           why:"Better lumberjack pays 25% experience on the extra logs" } },
   Foraging:    { key:"powerForager",    max:5, out:  +0.5, why:"Power forager, 50% chance to double" },
   Farming:     { key:"farmingTrickery", max:5, cost: -0.5, why:"Farming trickery saves half your seeds" },
   Carpentry:   { key:"plankBargain",    max:3, cost: -1.0, why:"Plank bargain removes the material cost" },
@@ -4625,6 +4643,12 @@ const MODS = {
 
    Only the potion whose in-game text has actually been read is modelled. The
    others exist; guessing their numbers would be worse than leaving them out. */
+const TRICKERY = {
+  match: /^potion of trickery$/i,
+  secs: 600, label: "Potion of trickery", baseShare: 0.25,
+  why: "Potion of trickery pays 25% of the base value of what you gather, on top of the item"
+};
+
 const POTIONS = {
   Smithing: {
     match: /^potion of forgery$/i,
@@ -4632,10 +4656,66 @@ const POTIONS = {
     saves: nm => /\bbars?\b/i.test(nm) && !/astronomical|otherworldly/i.test(nm),
     why: "Potion of forgery saves 10% of the bars — it does nothing for smelting, " +
          "and nothing for astronomical or otherworldly"
-  }
+  },
+  /* Trickery pays a share of BASE value, not market value, which is why it is
+     poor on cheap logs and good on expensive ore. Verified against the game:
+     3,600 actions an hour at 25% of 20 gold is the 18,000 the Pine screen
+     shows. Potion of negotiation is deliberately absent — it only lifts sales
+     to non-players, and nothing here sells to a vendor. */
+  Woodcutting: TRICKERY, Fishing: TRICKERY, Mining: TRICKERY, Foraging: TRICKERY
+};
+
+/** Vendor base value, which is what trickery pays a share of. */
+const baseValueOf = id => {
+  const it = state.itemById ? state.itemById.get(Number(id)) : null;
+  return it ? (Number(it.baseValue) || 0) : 0;
 };
 let potionOn = true;
 let skillRank = "gold";        // "gold" or "xp"
+
+/* Experience boosts, which are a different stack from skilling speed and were
+   being ignored entirely — the dashboard reported the raw task xp and so read
+   half what the game does.
+
+   Two parts, verified against Butthurticus's Pine screen:
+     house + clan house   55% for him (25% at T5 house, 30% clan house)
+     daily boost          a flat 30% on top, in 120-minute blocks
+
+   The clan half is the same for everyone in Overkill; the house half is not,
+   which is why this is typed rather than assumed. Note that the boosts screen
+   also lists a 5% that is NOT experience — it is the Gatherers speed upgrade,
+   and it belongs in the speed percentage instead. */
+let xpBoost = 55;              // per cent, house + clan house
+let dailyBoost = false;        // 120 minutes at a time, so off by default
+const XP_DAILY = 0.30;
+
+const xpMultiplier = () =>
+  (1 + Math.max(0, xpBoost) / 100) * (dailyBoost ? 1 + XP_DAILY : 1);
+
+/* The doubling upgrades give a second item, and a companion upgrade pays
+   experience on it. Better lumberjack is 25% on the extra log, which is why
+   Butthurticus claims 35.2 an action where the game's own Pine page says 28.2 —
+   that screen counts the base log only.
+
+   Chris reported this to the developers as a game bug: the in-game Task Stats
+   screen computes the base rate and ignores these upgrades entirely, which is
+   why its Pine page reads 28.2 an action against a real 35.2. So this panel is
+   deliberately not matching the game here — it is matching reality. If the game
+   is fixed, its numbers will rise to meet these rather than the reverse.
+
+   betterSkinner is left out: it exists in the profile but nothing has told me
+   which skill it belongs to or what it pays. */
+function extraXpFactor(m, yieldMul){
+  if (!m || !m.extraXp || yieldMul <= 1) return 1;
+  const who = skillMember
+    ? (state.members || []).find(x => x.name === skillMember)
+    : null;
+  const ups = who && who.profile ? who.profile.upgrades : null;
+  const held = ups ? Number(ups[m.extraXp.key]) : NaN;
+  /* Unknown member means assume they have it, matching how modTier behaves. */
+  if (Number.isFinite(held) && held <= 0) return 1;
+  return 1 + m.extraXp.rate * (yieldMul - 1);
+}
 
 /** Resolve the potion's item id by name once, then price it like any input. */
 function potionFor(skill){
@@ -4698,11 +4778,30 @@ function planTask(t, skill){
   const instant = !t.ms;
   const seconds = instant ? 0 : (t.ms / 1000) / speedFor(skill);
 
-  /* A potion only earns its keep on a task that actually consumes what it
-     saves, and only when the clock is running. Charging one for smelting
-     would quietly turn a profit into a loss. */
+  /* A potion is a per-task decision, not a global switch. Trickery pays 5 gold
+     an action on pine and costs 8.33; nobody would drink it, so the model must
+     not either. Work out what it would gain, weigh that against what it costs
+     per action, and only apply it when it comes out ahead — recording that it
+     was considered and rejected, so the card can say why. */
   const pot = (potionOn && !instant) ? potionFor(skill) : null;
-  const potUsed = pot && (t.costs || []).some(([id]) => pot.saves(itemNameFor(id)));
+  const potCostPerAction = pot ? (seconds / pot.secs) * pot.unit : 0;
+
+  let potGain = 0;
+  if (pot && pot.saves){
+    /* A cost-saver: worth the price of the ore it stops you buying. */
+    for (const [id, qty] of (t.costs || [])){
+      if (!pot.saves(itemNameFor(id))) continue;
+      const unit = id === GOLD_ID ? 1 : buyPrice(id);
+      if (unit) potGain += unit * qty * pot.rate;
+    }
+  } else if (pot && pot.baseShare){
+    /* A revenue adder: a share of the BASE value of what you gathered. */
+    potGain = pot.baseShare * (t.n * (m && m.out ? 1 + m.out * (modTier(m) / m.max) : 1))
+              * baseValueOf(t.out);
+  }
+
+  const potWorth = pot ? potGain - potCostPerAction : 0;
+  const potUsed  = !!pot && potWorth > 0;
 
   const parts = [];
   let cost = 0;
@@ -4727,12 +4826,14 @@ function planTask(t, skill){
                  vol: isFee ? Infinity : dailyVolume(id) });
   }
 
-  const potCost = potUsed ? (seconds / pot.secs) * pot.unit : 0;
+  const potCost = potUsed ? potCostPerAction : 0;
   cost += potCost;
 
   const yieldMul  = m && m.out ? 1 + m.out * frac : 1;
+  const xpEach    = (Number(t.xp) || 0) * extraXpFactor(m, yieldMul);
   const made      = t.n * yieldMul;
-  const revenue   = made * outUnit * (1 - SKILL_TAX);
+  const potBonus  = (potUsed && pot.baseShare) ? potGain : 0;
+  const revenue   = made * outUnit * (1 - SKILL_TAX) + potBonus;
   const perAction = revenue - cost;
 
   /* How many actions a day the CLOCK allows… */
@@ -4741,11 +4842,23 @@ function planTask(t, skill){
   /* …and how many the MARKET allows. You can't buy more of an input than trades
      in a day, nor sell more product than the market absorbs. This is what stops
      "smelt astronomical bars all day" when only a few hundred ore change hands. */
-  let byMarket = Math.floor(dailyVolume(t.out) / made) || 0;
+
+  /* A SHARE of that volume, not all of it. Pine logs trade 458,000 a day, and
+     86,400 actions making four each would dump 276,000 of them — sixty per cent
+     of everything that changes hands in the item. The best bid has 3,590 units
+     behind it; you would walk the book down through 81, 80, 75, 71, 55, and the
+     "sells for 81" this card promised would be fiction long before you stopped.
+
+     So Skilling takes the same tenth of daily flow the market panel takes.
+     The two were answering the same question differently — the exact bug I
+     fixed between the two market panels and then left standing here. */
+  const share = v => Math.floor((Number(v) || 0) * FLOW_SHARE);
+
+  let byMarket = Math.floor(share(dailyVolume(t.out)) / made) || 0;
   let scarce = { what: itemNameFor(t.out), vol: dailyVolume(t.out) };
   for (const p of parts){
     if (p.fee) continue;                       // gold is not traded, so it never caps
-    const cap = Math.floor(p.vol / p.used) || 0;
+    const cap = Math.floor(share(p.vol) / p.used) || 0;
     if (cap < byMarket){ byMarket = cap; scarce = { what: itemNameFor(p.id), vol: p.vol }; }
   }
 
@@ -4754,18 +4867,24 @@ function planTask(t, skill){
 
   return {
     ...t, skill, parts, cost, revenue, made, outUnit, perAction, seconds, instant,
-    byClock, byMarket, actions, perDay, potUsed, potCost, potLabel: potUsed ? pot.label : null,
+    byClock, byMarket, actions, perDay, potUsed, potCost, potBonus,
+    potLabel: pot ? pot.label : null,
     potWhy: potUsed ? pot.why : null,
+    /* Considered and rejected: worth saying, because "why isn't my potion in
+       here" is a better question to answer than to leave hanging. */
+    potSkipped: (pot && !potUsed) ? { label: pot.label, gain: potGain, cost: potCostPerAction } : null,
     limited: byMarket < byClock ? "market" : "time",
     scarce,
-    xpDay: (actions === Infinity || !t.xp) ? null : actions * t.xp,
+    xpEach,
+    xpDay: (actions === Infinity || !t.xp) ? null : actions * xpEach * xpMultiplier(),
 
     /* XP per hour is a CLOCK rate, not a market one: if you already hold the
        materials, or gathered them yourself, the market cap has nothing to do
        with how fast you level. Gold per xp is the other half — positive means
        the levels pay for themselves, negative is what they cost you. */
-    xpHour:  (instant || !t.xp) ? null : (3600 / seconds) * t.xp,
-    gpPerXp: t.xp ? perAction / t.xp : null,
+    xpHour:  (instant || !t.xp) ? null : (3600 / seconds) * xpEach * xpMultiplier(),
+    /* Boosted xp, so "what this level costs me" falls when the boosts are on. */
+    gpPerXp: xpEach ? perAction / (xpEach * xpMultiplier()) : null,
     modWhy: (m && frac > 0) ? m.why : null
   };
 }
@@ -5018,7 +5137,8 @@ function renderSkillCards(){
       </div>
       <div class="sub">${r.instant ? "instant" : r.seconds.toFixed(1) + "s"} ·
         makes ${r.made % 1 ? r.made.toFixed(1) : num(r.made)} ·
-        ${r.xp ? num(r.xp) + " xp" : "no xp"}${r.xpHour ? ` · ${abbr(r.xpHour)} xp/hr` : ""}</div>
+        ${r.xpEach ? `${r.xpEach % 1 ? r.xpEach.toFixed(1) : num(r.xpEach)} xp` : "no xp"}${
+          r.xpHour ? ` · ${abbr(r.xpHour)} xp/hr` : ""}</div>
 
       <div class="mats">${r.parts.length
         ? r.parts.map(p => p.fee
@@ -5029,9 +5149,13 @@ function renderSkillCards(){
 
       <div class="lines">
         <div><span>Materials</span><b>${r.cost ? gold(r.cost - r.potCost) : "—"}</b></div>
-        ${r.potUsed ? `<div><span>${esc(r.potLabel)}</span><b>${gold(r.potCost)}</b></div>` : ""}
-        <div><span>Sells for</span><b>${gold(r.revenue)}</b></div>
-        <div class="big"><span>Profit each</span>
+        ${r.potUsed && r.potCost ? `<div><span>${esc(r.potLabel)}</span><b>${gold(r.potCost)}</b></div>` : ""}
+        ${r.potBonus ? `<div><span>${esc(r.potLabel)} pays</span>
+          <b class="pos">${gold(r.potBonus)}</b></div>` : ""}
+        <div><span>Sells for</span><b>${gold(r.revenue)}</b>${
+          r.made > 1 ? `<span class="dim"> &nbsp;${r.made % 1 ? r.made.toFixed(1) : num(r.made)}
+            × ${gold(r.outUnit)}</span>` : ""}</div>
+        <div class="big"><span>Profit per action</span>
           <b class="${loss ? "neg" : "pos"}">${loss ? "−" : ""}${gold(Math.abs(r.perAction))}</b></div>
         ${r.perDay != null ? `<div class="big"><span>Per day</span>
           <b class="${r.perDay < 0 ? "neg" : "pos"}">${r.perDay < 0 ? "−" : ""}${gold(Math.abs(r.perDay))}</b></div>` : ""}
@@ -5039,12 +5163,16 @@ function renderSkillCards(){
           <b class="${r.gpPerXp < 0 ? "neg" : "pos"}">${perXp(Math.abs(r.gpPerXp))}</b></div>` : ""}
       </div>
 
+      ${r.potSkipped ? `<div class="cap dim">${esc(r.potSkipped.label)} would pay
+        ${gold(r.potSkipped.gain)} an action and cost ${gold(r.potSkipped.cost)} — not worth
+        drinking here.</div>` : ""}
       <div class="cap">${loss
         ? `Costs more to make than it sells for.`
         : r.limited === "market"
-          ? `${r.instant ? "Instant, so the market is the only limit" : `Capped at ${num(r.actions)} a day by the market`}: only ${num(r.scarce.vol)}
-             ${esc(r.scarce.what)} trade in a day.`
-          : `${num(r.actions)} a day at this speed — the market can absorb it.`}</div>
+          ? `${r.instant ? "Instant, so the market is the only limit" : `Capped at ${num(r.actions)} a day`}:
+             ${esc(r.scarce.what)} trades ${num(r.scarce.vol)} a day, and taking more than a
+             tenth of that walks the price down against you.`
+          : `${num(r.actions)} a day at this speed, inside a tenth of what the market trades.`}</div>
     </div>`;
   }).join("")}</div>` :
     `<div class="empty" style="padding:12px 0">Nothing in ${esc(spaceCase(skillOpen))}
@@ -5077,6 +5205,17 @@ function syncSpeedUI(writeValue){
 
   const who = $("#skillMember");
   if (who) who.onchange = () => { skillMember = who.value; saveSkillPrefs(); renderSkills(); };
+
+  const xpBox = $("#skillXpBoost");
+  if (xpBox) xpBox.onchange = () => {
+    const v = Math.round(Number(String(xpBox.value).replace(/[^0-9.]/g, "")));
+    if (Number.isFinite(v) && v >= 0){ xpBoost = v; saveSkillPrefs(); renderSkills(); }
+    xpBox.value = String(xpBoost);
+  };
+  const dayBox = $("#skillDaily");
+  if (dayBox) dayBox.onchange = () => {
+    dailyBoost = dayBox.checked; saveSkillPrefs(); renderSkills();
+  };
 
   const cb = $("#skillPot"); if (cb) cb.checked = potionOn;
   }
@@ -5119,6 +5258,8 @@ function openSkill(name){ skillOpen = name; renderSkills(); syncSpeedUI(true); }
 function initSkills(){
   if (!$("#skillBody")) return;
   loadSkillPrefs();
+  const xpB = $("#skillXpBoost"); if (xpB) xpB.value = String(xpBoost);
+  const dayB = $("#skillDaily");  if (dayB) dayB.checked = dailyBoost;
   $$("#skillRank button").forEach(x =>
     x.setAttribute("aria-pressed", String(x.dataset.rank === skillRank)));
   const potBox = $("#skillPot"); if (potBox) potBox.checked = potionOn;
@@ -5147,6 +5288,17 @@ function initSkills(){
 
   const who = $("#skillMember");
   if (who) who.onchange = () => { skillMember = who.value; saveSkillPrefs(); renderSkills(); };
+
+  const xpBox = $("#skillXpBoost");
+  if (xpBox) xpBox.onchange = () => {
+    const v = Math.round(Number(String(xpBox.value).replace(/[^0-9.]/g, "")));
+    if (Number.isFinite(v) && v >= 0){ xpBoost = v; saveSkillPrefs(); renderSkills(); }
+    xpBox.value = String(xpBoost);
+  };
+  const dayBox = $("#skillDaily");
+  if (dayBox) dayBox.onchange = () => {
+    dailyBoost = dayBox.checked; saveSkillPrefs(); renderSkills();
+  };
 
   const cb = $("#skillPot");
   if (cb) cb.onchange = () => { potionOn = cb.checked; saveSkillPrefs(); renderSkills(); syncSpeedUI(true); };
