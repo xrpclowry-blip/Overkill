@@ -854,7 +854,12 @@ const SKILL_ICONS = [
   ["cooking","Cooking"], ["mining","Mining"], ["smithing","Smithing"],
   ["foraging","Foraging"], ["farming","Farming"], ["crafting","Crafting"],
   ["agility","Agility"], ["plundering","Plundering"], ["enchanting","Enchanting"],
-  ["brewing","Brewing"], ["exterminating","Exterminating"], ["invocation","Invocation"]
+  ["brewing","Brewing"], ["exterminating","Exterminating"], ["invocation","Invocation"],
+  /* Not a skill, but it lands in the same folder under the same naming rule and
+     the Skilling panel's boost strip wants it: the daily experience boost has
+     no item behind it, so there is no item icon to fall back on. Saved as
+     skill-daily-boost.png. https://idleclans.wiki/w/File:Boost_icon.png */
+  ["daily-boost","Boost"]
 ];
 
 async function fetchSkillIcons(){
