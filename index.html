@@ -4876,6 +4876,12 @@ function planTask(t, skill){
     limited: byMarket < byClock ? "market" : "time",
     scarce,
     xpEach,
+    /* What the player actually sees per action, boosts and all — the game's
+       tree list says 35.2 for pine, not the raw 14 nor the 17.5 that sits
+       between them. A number that appears nowhere in the game is no use on a
+       card next to an hourly rate that is fully boosted. */
+    xpShown: xpEach * xpMultiplier(),
+    xpBase: Number(t.xp) || 0,
     xpDay: (actions === Infinity || !t.xp) ? null : actions * xpEach * xpMultiplier(),
 
     /* XP per hour is a CLOCK rate, not a market one: if you already hold the
@@ -5137,7 +5143,14 @@ function renderSkillCards(){
       </div>
       <div class="sub">${r.instant ? "instant" : r.seconds.toFixed(1) + "s"} ·
         makes ${r.made % 1 ? r.made.toFixed(1) : num(r.made)} ·
-        ${r.xpEach ? `${r.xpEach % 1 ? r.xpEach.toFixed(1) : num(r.xpEach)} xp` : "no xp"}${
+        ${r.xpShown ? `<span title="${esc(
+            `${num(r.xpBase)} base` +
+            (r.xpEach > r.xpBase
+              ? `, plus 25% for the extra item — without Better Lumberjack you only earn experience for one of the two`
+              : "") +
+            `, then ×${xpMultiplier().toFixed(3)} from your ${num(xpBoost)}% boost` +
+            (dailyBoost ? " and the daily +30%" : " (daily boost off)"))
+          }">${r.xpShown % 1 ? r.xpShown.toFixed(1) : num(r.xpShown)} xp</span>` : "no xp"}${
           r.xpHour ? ` · ${abbr(r.xpHour)} xp/hr` : ""}</div>
 
       <div class="mats">${r.parts.length
