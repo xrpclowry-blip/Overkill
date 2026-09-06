@@ -806,10 +806,6 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
             title="The boost percentage the game shows on your skilling screen. Caps at 80%."><span class="pct">%</span></span>
           <span class="mult" id="skillMult">4.00× faster</span>
         </label>
-        <label class="capbar" title="House plus clan house, as your boosts screen shows them. The 5% listed there for gathering is speed, not experience — that one belongs in the skilling speed box.">XP boost
-          <span class="pctwrap"><input id="skillXpBoost" type="number" min="0" max="300" step="1"
-            value="55" inputmode="numeric"><span class="pct">%</span></span>
-        </label>
         <label class="capbar" title="A flat 30% while a daily boost is running. They come in 120-minute blocks, so this is off unless you say otherwise.">
           <input type="checkbox" id="skillDaily"> Daily boost
         </label>
@@ -1101,6 +1097,15 @@ const state = {
   vault:null,
   route:"direct", loadedAt:null, errors:[]
 };
+
+/* A focused number input increments when the wheel turns over it, so scrolling
+   the page with the cursor in the wrong place silently ratchets a setting — and
+   these settings persist, so it stays wrong. Blur on wheel: the page scrolls,
+   the number doesn't move. */
+addEventListener("wheel", () => {
+  const el = document.activeElement;
+  if (el && el.tagName === "INPUT" && el.type === "number") el.blur();
+}, { passive: true, capture: true });
 
 /* =====================================================================
    How much to buy, and the ceiling on what you can hold
@@ -4589,7 +4594,6 @@ function loadSkillPrefs(){
     if (typeof doc.member === "string") skillMember = doc.member;
     if (typeof doc.rank === "string") skillRank = doc.rank;
     if (typeof doc.potion === "boolean") potionOn = doc.potion;
-    if (Number.isFinite(Number(doc.xpBoost))) xpBoost = Number(doc.xpBoost);
     if (typeof doc.daily === "boolean") dailyBoost = doc.daily;
   } catch { /* no storage, or it holds something we didn't write */ }
 }
@@ -4598,7 +4602,7 @@ function saveSkillPrefs(){
   try {
     localStorage.setItem(PCT_STORE, JSON.stringify({
       pct: skillPct, member: skillMember, rank: skillRank, potion: potionOn,
-      xpBoost, daily: dailyBoost
+      daily: dailyBoost
     }));
   } catch { /* full, blocked, or private — the session still works */ }
 }
@@ -4677,20 +4681,35 @@ let skillRank = "gold";        // "gold" or "xp"
    being ignored entirely — the dashboard reported the raw task xp and so read
    half what the game does.
 
-   Two parts, verified against Butthurticus's Pine screen:
-     house + clan house   55% for him (25% at T5 house, 30% clan house)
-     daily boost          a flat 30% on top, in 120-minute blocks
+   None of this needs typing. A member's own house tier is in their profile as
+   `housing`, five tiers at 5% each, so Butthurticus at tier 5 gets 25%. The
+   clan house is one building shared by everyone in Overkill — a T6 Castle at
+   30% — so it is the same number for all twenty members and belongs in a
+   constant rather than a text box.
 
-   The clan half is the same for everyone in Overkill; the house half is not,
-   which is why this is typed rather than assumed. Note that the boosts screen
-   also lists a 5% that is NOT experience — it is the Gatherers speed upgrade,
-   and it belongs in the speed percentage instead. */
-let xpBoost = 55;              // per cent, house + clan house
+   That leaves the daily boost, which genuinely is a choice: 30% for 120
+   minutes at a time, so it is on for part of a day and off for the rest.
+   ===================================================================== */
+const HOUSE_PER_TIER = 5;      // five tiers, 5% experience each
+const CLAN_HOUSE_XP  = 30;     // Overkill's T6 Castle, shared by everyone
+const XP_DAILY       = 0.30;
+
 let dailyBoost = false;        // 120 minutes at a time, so off by default
-const XP_DAILY = 0.30;
+
+/** The picked member's house tier, or the best case when nobody is picked. */
+function houseXpPercent(){
+  const who = skillMember
+    ? (state.members || []).find(x => x.name === skillMember)
+    : null;
+  const ups = who && who.profile ? who.profile.upgrades : null;
+  const tier = ups ? Number(ups.housing) : NaN;
+  return (Number.isFinite(tier) ? Math.max(0, tier) : 5) * HOUSE_PER_TIER;
+}
+
+const xpBoostPercent = () => houseXpPercent() + CLAN_HOUSE_XP;
 
 const xpMultiplier = () =>
-  (1 + Math.max(0, xpBoost) / 100) * (dailyBoost ? 1 + XP_DAILY : 1);
+  (1 + xpBoostPercent() / 100) * (dailyBoost ? 1 + XP_DAILY : 1);
 
 /* The doubling upgrades give a second item, and a companion upgrade pays
    experience on it. Better lumberjack is 25% on the extra log, which is why
@@ -5148,7 +5167,7 @@ function renderSkillCards(){
             (r.xpEach > r.xpBase
               ? `, plus 25% for the extra item — without Better Lumberjack you only earn experience for one of the two`
               : "") +
-            `, then ×${xpMultiplier().toFixed(3)} from your ${num(xpBoost)}% boost` +
+            `, then ×${xpMultiplier().toFixed(3)} — ${num(houseXpPercent())}% house plus ${num(CLAN_HOUSE_XP)}% clan house` +
             (dailyBoost ? " and the daily +30%" : " (daily boost off)"))
           }">${r.xpShown % 1 ? r.xpShown.toFixed(1) : num(r.xpShown)} xp</span>` : "no xp"}${
           r.xpHour ? ` · ${abbr(r.xpHour)} xp/hr` : ""}</div>
@@ -5219,12 +5238,6 @@ function syncSpeedUI(writeValue){
   const who = $("#skillMember");
   if (who) who.onchange = () => { skillMember = who.value; saveSkillPrefs(); renderSkills(); };
 
-  const xpBox = $("#skillXpBoost");
-  if (xpBox) xpBox.onchange = () => {
-    const v = Math.round(Number(String(xpBox.value).replace(/[^0-9.]/g, "")));
-    if (Number.isFinite(v) && v >= 0){ xpBoost = v; saveSkillPrefs(); renderSkills(); }
-    xpBox.value = String(xpBoost);
-  };
   const dayBox = $("#skillDaily");
   if (dayBox) dayBox.onchange = () => {
     dailyBoost = dayBox.checked; saveSkillPrefs(); renderSkills();
@@ -5271,7 +5284,6 @@ function openSkill(name){ skillOpen = name; renderSkills(); syncSpeedUI(true); }
 function initSkills(){
   if (!$("#skillBody")) return;
   loadSkillPrefs();
-  const xpB = $("#skillXpBoost"); if (xpB) xpB.value = String(xpBoost);
   const dayB = $("#skillDaily");  if (dayB) dayB.checked = dailyBoost;
   $$("#skillRank button").forEach(x =>
     x.setAttribute("aria-pressed", String(x.dataset.rank === skillRank)));
@@ -5302,12 +5314,6 @@ function initSkills(){
   const who = $("#skillMember");
   if (who) who.onchange = () => { skillMember = who.value; saveSkillPrefs(); renderSkills(); };
 
-  const xpBox = $("#skillXpBoost");
-  if (xpBox) xpBox.onchange = () => {
-    const v = Math.round(Number(String(xpBox.value).replace(/[^0-9.]/g, "")));
-    if (Number.isFinite(v) && v >= 0){ xpBoost = v; saveSkillPrefs(); renderSkills(); }
-    xpBox.value = String(xpBoost);
-  };
   const dayBox = $("#skillDaily");
   if (dayBox) dayBox.onchange = () => {
     dailyBoost = dayBox.checked; saveSkillPrefs(); renderSkills();
