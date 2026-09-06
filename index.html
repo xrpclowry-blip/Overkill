@@ -290,7 +290,32 @@ input[type="search"]{min-width:180px}
 .capbar input{background:var(--surface-2);color:var(--text-primary);border:1px solid var(--border);
   border-radius:8px;padding:6px 10px;font-size:13px;font-family:var(--mono);width:92px}
 .pctwrap{position:relative;display:inline-flex;align-items:center}
-#skillPotWrap input[type=checkbox]{width:auto;margin:0}
+
+/* The boost strip. Every toggle carries the game's own art for the thing it
+   switches on, so it reads as "that potion" rather than "a checkbox". Off is
+   dimmed and desaturated; on lights up and keeps the accent border, which is
+   legible at a glance across four of them in a row. */
+.boostbar{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 4px}
+.boostbar:empty{display:none}
+.boost{display:inline-flex;align-items:center;gap:7px;cursor:pointer;
+  background:var(--surface-2);color:var(--text-muted);border:1px solid var(--border);
+  border-radius:9px;padding:5px 11px 5px 8px;font-size:12.5px;font-family:inherit;
+  line-height:1.3;transition:background .12s,border-color .12s,color .12s}
+.boost:hover{border-color:var(--text-muted);color:var(--text-primary)}
+/* The drawn icon sits underneath the real one. Item art is served from
+   data/icons and removes itself when the file is missing, which would
+   otherwise leave a bare word where an icon should be. */
+.bicon{position:relative;width:18px;height:18px;flex:0 0 auto}
+.boost .bicon svg,.boost .bicon .iicon{position:absolute;inset:0;margin:0;
+  width:18px;height:18px;opacity:.45;filter:grayscale(1);
+  transition:opacity .12s,filter .12s}
+.boost .bicon .iicon{z-index:1}
+.boost[aria-pressed="true"]{background:var(--surface-3,var(--surface-2));
+  border-color:var(--accent);color:var(--text-primary)}
+.boost[aria-pressed="true"] .bicon svg,
+.boost[aria-pressed="true"] .bicon .iicon{opacity:1;filter:none}
+.boost .cost{font-family:var(--mono);font-size:11px;color:var(--text-muted)}
+.boost[aria-pressed="true"] .cost{color:var(--accent)}
 .pctwrap input{width:74px;padding-right:24px;text-align:right}
 .pctwrap .pct{position:absolute;right:10px;pointer-events:none;font-size:12px;
   font-family:var(--mono);color:var(--text-muted)}
@@ -806,20 +831,19 @@ footer{color:var(--text-muted);font-size:11.5px;padding:28px 0 0;border-top:1px 
             title="The boost percentage the game shows on your skilling screen. Caps at 80%."><span class="pct">%</span></span>
           <span class="mult" id="skillMult">4.00× faster</span>
         </label>
-        <label class="capbar" title="A flat 30% while a daily boost is running. They come in 120-minute blocks, so this is off unless you say otherwise.">
-          <input type="checkbox" id="skillDaily"> Daily boost
-        </label>
         <label class="capbar">Rank by
           <span class="seg" id="skillRank">
             <button data-rank="gold" aria-pressed="true">Gold</button>
             <button data-rank="xp" aria-pressed="false">XP</button>
           </span>
         </label>
-        <label class="capbar" id="skillPotWrap" hidden>
-          <input type="checkbox" id="skillPot" checked>
-          <span>Use <span id="skillPotLbl">potion</span></span>
-        </label>
       </div>
+
+      <!-- What you're running. Each one is an icon you can recognise at a
+           glance rather than a checkbox whose label has drifted off to the
+           right and attached itself to whatever happens to be next to it. -->
+      <div class="boostbar" id="skillBoosts"></div>
+
       <div id="skillBody"></div>
     </div>
   </section>
@@ -4595,6 +4619,10 @@ function loadSkillPrefs(){
     if (typeof doc.rank === "string") skillRank = doc.rank;
     if (typeof doc.potion === "boolean") potionOn = doc.potion;
     if (typeof doc.daily === "boolean") dailyBoost = doc.daily;
+    if (typeof doc.ancient === "boolean") ancientOn = doc.ancient;
+    /* Gloves are per skill, because you get them one skilling party at a
+       time — nobody has the full set. */
+    if (doc.gloves && typeof doc.gloves === "object") glovesOn = doc.gloves;
   } catch { /* no storage, or it holds something we didn't write */ }
 }
 
@@ -4602,7 +4630,7 @@ function saveSkillPrefs(){
   try {
     localStorage.setItem(PCT_STORE, JSON.stringify({
       pct: skillPct, member: skillMember, rank: skillRank, potion: potionOn,
-      daily: dailyBoost
+      daily: dailyBoost, ancient: ancientOn, gloves: glovesOn
     }));
   } catch { /* full, blocked, or private — the session still works */ }
 }
@@ -4664,9 +4692,20 @@ const POTIONS = {
   /* Trickery pays a share of BASE value, not market value, which is why it is
      poor on cheap logs and good on expensive ore. Verified against the game:
      3,600 actions an hour at 25% of 20 gold is the 18,000 the Pine screen
-     shows. Potion of negotiation is deliberately absent — it only lifts sales
-     to non-players, and nothing here sells to a vendor. */
+     shows. */
   Woodcutting: TRICKERY, Fishing: TRICKERY, Mining: TRICKERY, Foraging: TRICKERY
+};
+
+/* Ancient knowledge is not a bonus this panel applies — it's already inside the
+   percentage you typed, because that's the number the game shows you while it's
+   running. What it is, is a bill: ten minutes at a time, and most of the league
+   drinks it around the clock. So the toggle charges for it rather than granting
+   anything, and leaving it off is a deliberate "the day's profit covers it,
+   don't clutter the card". */
+const ANCIENT = {
+  match: /^potion of ancient knowledge$/i,
+  secs: 600, label: "Potion of ancient knowledge",
+  why: "Ancient knowledge is already in your speed %, so this only charges for it"
 };
 
 /** Vendor base value, which is what trickery pays a share of. */
@@ -4674,7 +4713,109 @@ const baseValueOf = id => {
   const it = state.itemById ? state.itemById.get(Number(id)) : null;
   return it ? (Number(it.baseValue) || 0) : 0;
 };
+
+/* ── What a vendor actually pays ──────────────────────────────────────────
+   Not the base value. Two bonuses sit on top and they multiply rather than add,
+   the same way the potion-duration ones do:
+
+     An offer they can't refuse  +10%   clan upgrade, so all of Overkill has it
+     Last negotiation            +5%    Local Market perk, fully unlocked —
+                                        permanently grants the negotiation
+                                        potion's effect, so it costs nothing
+                                        and is never off
+
+   Checked against the game twice. The forgery potion's own card reads 575 and
+   its sell button offers 664: 575 × 1.155 = 664.1. A titanium platebody is
+   15,600 at base and vendors for 18,018: 15,600 × 1.155 = 18,018. Both exact,
+   which is what makes this worth trusting.
+
+   Both are permanent and account-wide, so there is no toggle and no potion to
+   price — the vendor simply pays 15.5% over base. */
+const VENDOR_MULT = 1.10 * 1.05;
+
+/* Floored, and floored ONCE. Stepping through the two bonuses separately and
+   flooring each time gives the forgery potion 575 → 632 → 663, and the game
+   plainly says 664. One combined multiply floors to 664.125 → 664, and the
+   platebody's 15,600 × 1.155 = 18,018 lands exactly either way. Gold is whole
+   numbers, so the floor has to be somewhere; this is where. */
+const vendorPrice = id => Math.floor(baseValueOf(id) * VENDOR_MULT);
+
+/* ── How long a potion really lasts ───────────────────────────────────────
+   The item card's "3m" is the base. Two upgrades stretch it, multiplicatively:
+
+     Potioneering         +25%   a clan upgrade, so again everyone has it
+     Responsible drinking +10%   personal, and it sits in the profile
+
+   180 × 1.25 × 1.10 = 247.5s, which is the "Drink (4m 8s)" the game shows.
+   Adding them would have given 4m 3s, so the stacking order is settled. This
+   matters more than it looks: costing a potion against 3 minutes instead of
+   four overstates every potion on the page by about a third. */
+const CLAN_POTIONEERING    = 0.25;
+const RESPONSIBLE_DRINKING = 0.10;
+
+/* The profile's key for it hasn't been read from a live payload, and guessing
+   an exact spelling is how the upgrade ceilings went wrong the first time. So
+   match loosely on the name instead, and assume it when nobody is picked. */
+function hasResponsibleDrinking(){
+  const who = skillMember
+    ? (state.members || []).find(x => x.name === skillMember)
+    : null;
+  const ups = who && who.profile ? who.profile.upgrades : null;
+  if (!ups) return true;
+  for (const k of Object.keys(ups)){
+    if (/responsible.?drink/i.test(k)) return Number(ups[k]) > 0;
+  }
+  return true;                       // not reported at all — assume they have it
+}
+
+const potionSeconds = base =>
+  base * (1 + CLAN_POTIONEERING) *
+  (hasResponsibleDrinking() ? 1 + RESPONSIBLE_DRINKING : 1);
+
+/* ── Skilling gloves ──────────────────────────────────────────────────────
+   "5% chance to produce double loot in associated skill." They're equipment
+   rather than an upgrade, so there is no profile field to read and no honest
+   way to detect them — the same wall the toolbelt put up. Treated like the
+   maxed-upgrade assumption instead: applied when the game has a glove for the
+   skill at all, and said out loud in the hint under the cards.
+
+   Output only. Better Lumberjack had to be bought separately to earn
+   experience on a doubled log, so assuming these pay experience too would be
+   inventing a second upgrade nobody mentioned. */
+const GLOVES_RATE = 0.05;
+
+const _gloves = new Map();               // skill -> factor, per item-list load
+
+/** Does the game have gloves for this skill at all? Decides whether to offer
+ *  the toggle; whether they're WORN is glovesOn, which only you can know. */
+function glovesExist(skill){ return glovesRate(skill) > 1; }
+
+function glovesFactor(skill){
+  return glovesOn[skill] ? glovesRate(skill) : 1;
+}
+
+function glovesRate(skill){
+  const size = state.itemById ? state.itemById.size : 0;
+  if (!size) return 1;
+  /* Scanning a thousand items for every task on every render is a waste, but
+     the answer changes once — when the item list finishes loading — so key the
+     cache on its size and let it rebuild then. */
+  const hit = _gloves.get(skill);
+  if (hit && hit.size === size) return hit.factor;
+
+  const want = skill.toLowerCase() + " gloves";
+  let factor = 1;
+  for (const [, it] of state.itemById){
+    if (String(it.name || "").replace(/_/g, " ").trim().toLowerCase() === want){
+      factor = 1 + GLOVES_RATE; break;
+    }
+  }
+  _gloves.set(skill, { size, factor });
+  return factor;
+}
 let potionOn = true;
+let ancientOn = false;         // a bill, not a bonus — off until you ask for it
+let glovesOn  = {};            // skill -> true, because they're won one at a time
 let skillRank = "gold";        // "gold" or "xp"
 
 /* Experience boosts, which are a different stack from skilling speed and were
@@ -4715,8 +4856,10 @@ const xpMultiplier = () =>
    works out to 35.2625 and the skill screen reads 35.2, not 35.3. The epsilon
    only stops a value that should land exactly on a tenth — 21.700000000000003,
    say — from falling to the tenth below. */
+const trunc1 = v => Math.floor(v * 10 + 1e-9) / 10;
+
 const xp1 = v => {
-  const t = Math.floor(v * 10 + 1e-9) / 10;
+  const t = trunc1(v);
   return t % 1 ? t.toFixed(1) : num(t);
 };
 
@@ -4745,9 +4888,9 @@ function extraXpFactor(m, yieldMul){
   return 1 + m.extraXp.rate * (yieldMul - 1);
 }
 
-/** Resolve the potion's item id by name once, then price it like any input. */
-function potionFor(skill){
-  const p = POTIONS[skill]; if (!p) return null;
+/** Resolve a potion's item id by name once, then price it like any input. */
+function pricedPotion(p){
+  if (!p) return null;
   /* Item metadata arrives asynchronously, so a miss must be retried rather than
      memoised — caching the first null silently disabled every potion. */
   const size = state.itemById ? state.itemById.size : 0;
@@ -4761,6 +4904,8 @@ function potionFor(skill){
   const unit = buyPrice(p._id);
   return unit ? Object.assign({}, p, { id: p._id, unit }) : null;
 }
+
+const potionFor = skill => pricedPotion(POTIONS[skill]);
 
 let skillMember = "";     // "" = no one picked, assume every upgrade maxed
 
@@ -4812,7 +4957,7 @@ function planTask(t, skill){
      per action, and only apply it when it comes out ahead — recording that it
      was considered and rejected, so the card can say why. */
   const pot = (potionOn && !instant) ? potionFor(skill) : null;
-  const potCostPerAction = pot ? (seconds / pot.secs) * pot.unit : 0;
+  const potCostPerAction = pot ? (seconds / potionSeconds(pot.secs)) * pot.unit : 0;
 
   let potGain = 0;
   if (pot && pot.saves){
@@ -4857,11 +5002,31 @@ function planTask(t, skill){
   const potCost = potUsed ? potCostPerAction : 0;
   cost += potCost;
 
+  /* Ancient knowledge grants nothing here — the speed % already carries it —
+     so it is only ever a cost, and only when you've asked to be billed. */
+  const akPot  = (ancientOn && !instant) ? pricedPotion(ANCIENT) : null;
+  const akCost = akPot ? (seconds / potionSeconds(akPot.secs)) * akPot.unit : 0;
+  cost += akCost;
+
   const yieldMul  = m && m.out ? 1 + m.out * frac : 1;
   const xpEach    = (Number(t.xp) || 0) * extraXpFactor(m, yieldMul);
-  const made      = t.n * yieldMul;
+  const gloves    = glovesFactor(skill);
+  const made      = t.n * yieldMul * gloves;
   const potBonus  = (potUsed && pot.baseShare) ? potGain : 0;
-  const revenue   = made * outUnit * (1 - SKILL_TAX) + potBonus;
+
+  /* ── Where the output goes ──────────────────────────────────────────────
+     Two routes, and the better one wins. The market charges 1% tax and can
+     only absorb so much a day; a vendor takes everything at a fixed price and
+     charges nothing, which is why smithing-to-vendor is a real trade rather
+     than the loss this panel used to report. */
+  const marketUnit = outUnit * (1 - SKILL_TAX);
+  const vendUnit   = vendorPrice(t.out);
+  const toVendor   = vendUnit > marketUnit;
+
+  const routeUnit  = toVendor ? vendUnit : marketUnit;
+  const routeLabel = toVendor ? "to a vendor" : "on the market";
+
+  const revenue   = made * routeUnit + potBonus;
   const perAction = revenue - cost;
 
   /* How many actions a day the CLOCK allows… */
@@ -4882,8 +5047,12 @@ function planTask(t, skill){
      fixed between the two market panels and then left standing here. */
   const share = v => Math.floor((Number(v) || 0) * FLOW_SHARE);
 
-  let byMarket = Math.floor(share(dailyVolume(t.out)) / made) || 0;
-  let scarce = { what: itemNameFor(t.out), vol: dailyVolume(t.out) };
+  /* A vendor is not a market: it buys every one you bring at the same price, so
+     when the output goes that way the only ceiling left is what you can buy to
+     feed it. That is still a real ceiling — titanium bars trade a few thousand
+     a day and a tenth of that is the whole trade. */
+  let byMarket = toVendor ? Infinity : (Math.floor(share(dailyVolume(t.out)) / made) || 0);
+  let scarce   = toVendor ? null : { what: itemNameFor(t.out), vol: dailyVolume(t.out) };
   for (const p of parts){
     if (p.fee) continue;                       // gold is not traded, so it never caps
     const cap = Math.floor(share(p.vol) / p.used) || 0;
@@ -4896,6 +5065,9 @@ function planTask(t, skill){
   return {
     ...t, skill, parts, cost, revenue, made, outUnit, perAction, seconds, instant,
     byClock, byMarket, actions, perDay, potUsed, potCost, potBonus,
+    gloves, akCost, akLabel: akPot ? akPot.label : null,
+    /* Which of the three routes won, and what a single unit fetched there. */
+    toVendor, routeLabel, routeUnit,
     potLabel: pot ? pot.label : null,
     potWhy: potUsed ? pot.why : null,
     /* Considered and rejected: worth saying, because "why isn't my potion in
@@ -5106,7 +5278,8 @@ function renderSkillGrid(){
   names.sort();
   $("#skillHint").innerHTML =
     `Materials priced at what you'd <strong>pay</strong>, output at what you'd ` +
-    `<strong>receive</strong>, after the 1% tax · rates capped by what the market ` +
+    `<strong>receive</strong> — whichever pays better, the market after its 1% tax or ` +
+    `a vendor · rates capped by what the market ` +
     `actually trades · prices from ${ago(snapshotAge(skillPrices))} ago` +
     (snapshotAge(skillPrices) > STALE_HOURS
       ? ` <strong class="neg">— the hourly snapshot has stopped, so these are out of date</strong>` : "") +
@@ -5114,7 +5287,10 @@ function renderSkillGrid(){
     `skill, and Smithing has no outfit so it sits lower. ` +
     (skillMember
       ? `Upgrade tiers are ${esc(skillMember)}'s.`
-      : `Upgrade tiers are <strong>assumed maxed</strong> — pick a member above to use theirs.`);
+      : `Upgrade tiers are <strong>assumed maxed</strong> — pick a member above to use theirs.`) +
+    /* Gear can't be read from a profile, so gloves are a switch rather than an
+       assumption — they're a skilling-party drop and most people have a few. */
+    ` Gloves and potions are the toggles below.`;
 
   host.innerHTML = `<div class="skgrid">${names.map(n => {
     if (n === INVOCATION){
@@ -5169,7 +5345,7 @@ function renderSkillCards(){
         <span class="t">${esc(taskName(r.name))}</span>
         <span class="lv">Lvl ${num(r.lvl)}</span>
       </div>
-      <div class="sub">${r.instant ? "instant" : r.seconds.toFixed(1) + "s"} ·
+      <div class="sub">${r.instant ? "instant" : trunc1(r.seconds).toFixed(1) + "s"} ·
         makes ${r.made % 1 ? r.made.toFixed(1) : num(r.made)} ·
         ${r.xpShown ? `<span title="${esc(
             `${num(r.xpBase)} base` +
@@ -5189,13 +5365,15 @@ function renderSkillCards(){
         : '<span class="mat dim">no materials</span>'}</div>
 
       <div class="lines">
-        <div><span>Materials</span><b>${r.cost ? gold(r.cost - r.potCost) : "—"}</b></div>
+        <div><span>Materials</span><b>${
+          (r.cost - r.potCost - r.akCost) ? gold(r.cost - r.potCost - r.akCost) : "—"}</b></div>
         ${r.potUsed && r.potCost ? `<div><span>${esc(r.potLabel)}</span><b>${gold(r.potCost)}</b></div>` : ""}
+        ${r.akCost ? `<div><span>${esc(r.akLabel)}</span><b>${gold(r.akCost)}</b></div>` : ""}
         ${r.potBonus ? `<div><span>${esc(r.potLabel)} pays</span>
           <b class="pos">${gold(r.potBonus)}</b></div>` : ""}
-        <div><span>Sells for</span><b>${gold(r.revenue)}</b>${
-          r.made > 1 ? `<span class="dim"> &nbsp;${r.made % 1 ? r.made.toFixed(1) : num(r.made)}
-            × ${gold(r.outUnit)}</span>` : ""}</div>
+        <div><span>Sells ${esc(r.routeLabel)}</span><b>${gold(r.revenue)}</b>${
+          r.made !== 1 ? `<span class="dim"> &nbsp;${r.made % 1 ? r.made.toFixed(2) : num(r.made)}
+            × ${gold(r.routeUnit)}</span>` : ""}</div>
         <div class="big"><span>Profit per action</span>
           <b class="${loss ? "neg" : "pos"}">${loss ? "−" : ""}${gold(Math.abs(r.perAction))}</b></div>
         ${r.perDay != null ? `<div class="big"><span>Per day</span>
@@ -5209,11 +5387,16 @@ function renderSkillCards(){
         drinking here.</div>` : ""}
       <div class="cap">${loss
         ? `Costs more to make than it sells for.`
-        : r.limited === "market"
+        : r.limited === "market" && r.scarce
           ? `${r.instant ? "Instant, so the market is the only limit" : `Capped at ${num(r.actions)} a day`}:
              ${esc(r.scarce.what)} trades ${num(r.scarce.vol)} a day, and taking more than a
              tenth of that walks the price down against you.`
-          : `${num(r.actions)} a day at this speed, inside a tenth of what the market trades.`}</div>
+          : r.actions === Infinity
+            /* Vendor-bound and fed by nothing the market sells: no ceiling the
+               dashboard can see, which is a claim worth making carefully. */
+            ? `Nothing here is bought or sold on the market, so there is no daily
+               ceiling to report — a vendor takes as many as you can make.`
+            : `${num(r.actions)} a day at this speed, inside a tenth of what the market trades.`}</div>
     </div>`;
   }).join("")}</div>` :
     `<div class="empty" style="padding:12px 0">Nothing in ${esc(spaceCase(skillOpen))}
@@ -5233,11 +5416,9 @@ function syncSpeedUI(writeValue){
   const wrap = $("#skillPctWrap");
   // Invocation has no clock, so no speed to set.
   if (wrap) wrap.hidden = !skillOpen || skillOpen === INVOCATION;
-  const box = $("#skillPotWrap"), pot = POTIONS[skillOpen];
-  if (box){
-    box.hidden = !pot;
-    if (pot) $("#skillPotLbl").textContent = pot.label;
-    $$("#skillRank button").forEach(btn => btn.onclick = () => {
+  renderBoostBar();
+
+  $$("#skillRank button").forEach(btn => btn.onclick = () => {
     skillRank = btn.dataset.rank;
     $$("#skillRank button").forEach(x => x.setAttribute("aria-pressed", String(x === btn)));
     saveSkillPrefs();
@@ -5247,16 +5428,129 @@ function syncSpeedUI(writeValue){
   const who = $("#skillMember");
   if (who) who.onchange = () => { skillMember = who.value; saveSkillPrefs(); renderSkills(); };
 
-  const dayBox = $("#skillDaily");
-  if (dayBox) dayBox.onchange = () => {
-    dailyBoost = dayBox.checked; saveSkillPrefs(); renderSkills();
-  };
-
-  const cb = $("#skillPot"); if (cb) cb.checked = potionOn;
-  }
   const mul = $("#skillMult");
   if (mul) mul.textContent = `${speedFor(skillOpen).toFixed(2)}× faster` +
     (pct >= PCT_CAP ? " · capped" : "");
+}
+
+/* ── The boost strip ──────────────────────────────────────────────────────
+   Four things can be running, and until now two of them were bare checkboxes
+   whose labels sat far enough to the right to look like they belonged to the
+   speed field next door. Nobody could tell which box was which — including the
+   person who asked for them.
+
+   So each is a button carrying the game's own art for the thing it switches.
+   The potions and gloves use their real item icons, which the asset job
+   already pulls; the daily boost has no item behind it, so it gets a drawn
+   badge in the same shape the game uses. */
+const DAILY_ICON = `<svg viewBox="0 0 20 20" aria-hidden="true">
+  <rect x="1.5" y="3.5" width="17" height="13" rx="3.5"
+        fill="none" stroke="currentColor" stroke-width="1.6"/>
+  <text x="10" y="13.4" text-anchor="middle" font-size="8.5"
+        font-family="system-ui,sans-serif" font-weight="700"
+        fill="currentColor">XP</text></svg>`;
+
+/* Fallbacks for when the icon file hasn't been fetched yet. They must not be
+   the XP badge: an unrecognisable icon is a nuisance, but the WRONG icon on a
+   potion is a lie about which boost you just switched on. */
+const POTION_ICON = `<svg viewBox="0 0 20 20" aria-hidden="true">
+  <path d="M8 2.5h4M9 2.5v4.2L5.2 13.4a2.6 2.6 0 0 0 2.2 4h5.2a2.6 2.6 0 0 0
+           2.2-4L11 6.7V2.5" fill="none" stroke="currentColor"
+        stroke-width="1.5" stroke-linejoin="round"/>
+  <path d="M6.6 12.2h6.8" stroke="currentColor" stroke-width="1.5"/></svg>`;
+
+const GLOVE_ICON = `<svg viewBox="0 0 20 20" aria-hidden="true">
+  <path d="M6 17.5v-4l-1.6-2a1.5 1.5 0 0 1 2.3-1.9l.8.9V4.2a1.4 1.4 0 0 1 2.8 0v3.4
+           a1.4 1.4 0 0 1 2.7 0v.8a1.4 1.4 0 0 1 2.6.7v3.2a5 5 0 0 1-1.4 3.5l-1 1.7"
+        fill="none" stroke="currentColor" stroke-width="1.5"
+        stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+
+/** The item id behind a potion definition, or null before the list loads. */
+const potionIconFor = def => {
+  const p = pricedPotion(def);
+  return p ? itemIcon(p.id) : "";
+};
+
+function glovesIcon(skill){
+  if (!state.itemById) return "";
+  const want = skill.toLowerCase() + " gloves";
+  for (const [id, it] of state.itemById){
+    if (String(it.name || "").replace(/_/g, " ").trim().toLowerCase() === want)
+      return itemIcon(id);
+  }
+  return "";
+}
+
+function renderBoostBar(){
+  const bar = $("#skillBoosts");
+  if (!bar) return;
+
+  /* Only inside an open skill: on the badge grid there is no one task to
+     apply any of it to, and a strip of dead toggles is worse than none. */
+  if (!skillOpen || skillOpen === INVOCATION){ bar.innerHTML = ""; return; }
+
+  const pot  = POTIONS[skillOpen];
+  const btns = [];
+
+  if (pot) btns.push({
+    key: "potion", on: potionOn, art: potionIconFor(pot), icon: POTION_ICON, label: pot.label,
+    title: pot.why + ". Weighed per task — it stays off where it costs more than it saves."
+  });
+
+  if (glovesExist(skillOpen)) btns.push({
+    key: "gloves", on: !!glovesOn[skillOpen], art: glovesIcon(skillOpen), icon: GLOVE_ICON,
+    label: `${spaceCase(skillOpen)} gloves`,
+    title: "5% chance to double the loot. A skilling party drop, so this is off " +
+           "unless you say you have them."
+  });
+
+  btns.push({
+    key: "ancient", on: ancientOn, art: potionIconFor(ANCIENT), icon: POTION_ICON,
+    label: "Ancient knowledge",
+    title: "Already inside the speed % you typed, so this doesn't add anything — " +
+           "it charges you for what you're drinking."
+  });
+
+  btns.push({
+    key: "daily", on: dailyBoost, icon: DAILY_ICON, label: "Daily boost",
+    /* The game's own boost icon, which the asset job pulls from the wiki. It
+       has no item behind it, so it can't come through itemIcon; until the job
+       next runs the drawn badge underneath is what shows. */
+    art: `<img class="iicon" src="data/icons/skill-daily-boost.png"
+               alt="" loading="lazy" onerror="this.remove()">`,
+    title: "A flat 30% experience while one is running. They come in 120-minute " +
+           "blocks, so this is off unless you say otherwise."
+  });
+
+  bar.innerHTML = btns.map(b =>
+    `<button type="button" class="boost" data-boost="${b.key}"
+             aria-pressed="${b.on}" title="${esc(b.title)}">
+       <span class="bicon">${b.icon}${b.art || ""}</span><span>${esc(b.label)}</span>
+     </button>`).join("");
+}
+
+/* Delegated, on the container rather than the buttons, because the strip is
+   rewritten on every skill switch — binding per render is what detached the
+   percentage box mid-click the last time. */
+function wireBoostBar(){
+  const bar = $("#skillBoosts");
+  if (!bar || bar._wired) return;
+  bar._wired = true;
+  bar.addEventListener("click", e => {
+    const btn = e.target.closest(".boost"); if (!btn) return;
+    switch (btn.dataset.boost){
+      case "potion":  potionOn  = !potionOn;  break;
+      case "gloves":  glovesOn[skillOpen] = !glovesOn[skillOpen]; break;
+      case "ancient": ancientOn = !ancientOn; break;
+      case "daily":   dailyBoost = !dailyBoost; break;
+      default: return;
+    }
+    saveSkillPrefs();
+    /* Repaint the strip itself, not just the cards: the pressed state lives
+       here, and renderSkills() has no reason to touch it. */
+    renderBoostBar();
+    renderSkills();
+  });
 }
 
 /** Fill the picker once the clan load has produced members. */
@@ -5293,10 +5587,9 @@ function openSkill(name){ skillOpen = name; renderSkills(); syncSpeedUI(true); }
 function initSkills(){
   if (!$("#skillBody")) return;
   loadSkillPrefs();
-  const dayB = $("#skillDaily");  if (dayB) dayB.checked = dailyBoost;
+  wireBoostBar();
   $$("#skillRank button").forEach(x =>
     x.setAttribute("aria-pressed", String(x.dataset.rank === skillRank)));
-  const potBox = $("#skillPot"); if (potBox) potBox.checked = potionOn;
   const inp = $("#skillPct");
   if (inp){
     const apply = () => {
@@ -5322,14 +5615,6 @@ function initSkills(){
 
   const who = $("#skillMember");
   if (who) who.onchange = () => { skillMember = who.value; saveSkillPrefs(); renderSkills(); };
-
-  const dayBox = $("#skillDaily");
-  if (dayBox) dayBox.onchange = () => {
-    dailyBoost = dayBox.checked; saveSkillPrefs(); renderSkills();
-  };
-
-  const cb = $("#skillPot");
-  if (cb) cb.onchange = () => { potionOn = cb.checked; saveSkillPrefs(); renderSkills(); syncSpeedUI(true); };
 
   /* Delegated, not per-render: blurring the % box re-renders, and a handler bound
      to the old node would be destroyed between mousedown and click. */
