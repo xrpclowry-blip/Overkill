@@ -4711,6 +4711,15 @@ const xpBoostPercent = () => houseXpPercent() + CLAN_HOUSE_XP;
 const xpMultiplier = () =>
   (1 + xpBoostPercent() / 100) * (dailyBoost ? 1 + XP_DAILY : 1);
 
+/* The game truncates experience to one decimal rather than rounding it: Pine
+   works out to 35.2625 and the skill screen reads 35.2, not 35.3. The epsilon
+   only stops a value that should land exactly on a tenth — 21.700000000000003,
+   say — from falling to the tenth below. */
+const xp1 = v => {
+  const t = Math.floor(v * 10 + 1e-9) / 10;
+  return t % 1 ? t.toFixed(1) : num(t);
+};
+
 /* The doubling upgrades give a second item, and a companion upgrade pays
    experience on it. Better lumberjack is 25% on the extra log, which is why
    Butthurticus claims 35.2 an action where the game's own Pine page says 28.2 —
@@ -5169,7 +5178,7 @@ function renderSkillCards(){
               : "") +
             `, then ×${xpMultiplier().toFixed(3)} — ${num(houseXpPercent())}% house plus ${num(CLAN_HOUSE_XP)}% clan house` +
             (dailyBoost ? " and the daily +30%" : " (daily boost off)"))
-          }">${r.xpShown % 1 ? r.xpShown.toFixed(1) : num(r.xpShown)} xp</span>` : "no xp"}${
+          }">${xp1(r.xpShown)} xp</span>` : "no xp"}${
           r.xpHour ? ` · ${abbr(r.xpHour)} xp/hr` : ""}</div>
 
       <div class="mats">${r.parts.length
